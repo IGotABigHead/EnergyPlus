@@ -11,6 +11,9 @@ import sys
 import pandas as pd
 import base64
 import shutil
+import re
+from pydantic import BaseModel
+import numpy as np
 
 # Ajouter le chemin vers eppy
 pathnameto_eppy = 'C:\\Users\\Cesi\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\site-packages\\eppy'
@@ -236,12 +239,13 @@ def run_simulation(idf_file_id: str = Body(...), epw_file_id: str = Body(...)):
             if csv_files:
                 csv_output_path = os.path.join(csv_dir, csv_files[0])
                 
-                # Nommage de la simulation
+                # Nommage de la simulation avec version du fichier IDF
                 base_name = os.path.basename(idf_path).replace('.idf', '')
-                existing_count = simulation_runs.count_documents({"simulation_name": {"$regex": f"^{base_name}(_[0-9]+)?$"}})
-                existing_count_nb_salle = existing_count/8
-                simulation_name = f"{base_name}_{existing_count_nb_salle + 1}"
-
+                # Chercher le nombre de simulations existantes avec ce base_name
+                existing_sim_names = simulation_runs.distinct("simulation_name", {"simulation_name": {"$regex": f"^{re.escape(base_name)}_\\d+$"}})
+                existing_count = len(existing_sim_names)
+                simulation_name = f"{base_name}_{existing_count + 1}"
+                
                 # Copie du fichier de résultats
                 res_dir = r"C:\Users\Cesi\Desktop\IR_THEO_BOSSET\Solution\res"
                 os.makedirs(res_dir, exist_ok=True)
@@ -584,20 +588,24 @@ def store_results_by_zone(df, simulation_name, idf_file_id, epw_file_id):
         }
         simulation_runs.insert_one(doc)
 
-# http://localhost:8000/room_summary/?room=TESLA
+# http://localhost:8000/room_summary/?simulation_name=NR3_V07-24_1&room=TESLA&hour=16&date=06/26
 @app.get("/room_summary/")
 def get_room_summary(
     simulation_name: Optional[str] = Query(None, description="Nom de la simulation. Si non fourni, la dernière est utilisée."),
-    room: str = Query(..., description="Nom de la salle, ex: TESLA"),
+    room: Optional[str] = Query(None, description="Nom de la salle, ex: TESLA. Si non fourni, somme sur toutes les rooms."),
     date: Optional[str] = Query(None, description="Date au format 'JJ/MM' (optionnel)."),
     hour: Optional[str] = Query(None, description="Heure au format HH (ex: '01', '14').")
 ):
     """
-    Retourne un résumé complet (énergie, PMV, température, humidité) pour une salle donnée.
+    Retourne un résumé complet (énergie, PMV, température, humidité) pour une salle donnée ou la somme sur toutes les salles si non spécifiée.
     """
     sim_name = get_latest_simulation_name_if_none(simulation_name)
-    doc = simulation_runs.find_one({"simulation_name": sim_name, "zone": room})
-    if not doc:
+    normalized_date = normalize_date(date)
+    if room:
+        docs = [simulation_runs.find_one({"simulation_name": sim_name, "zone": room})]
+    else:
+        docs = list(simulation_runs.find({"simulation_name": sim_name}))
+    if not docs or docs[0] is None:
         raise HTTPException(status_code=404, detail="Simulation ou zone non trouvée")
 
     total_energy = 0.0
@@ -606,104 +614,252 @@ def get_room_summary(
     pmv_values = []
     temperature_values = []
     humidity_values = []
-    normalized_date = normalize_date(date)
+    total_energy_transfer = 0.0
+    total_heating_transfer = 0.0
+    total_cooling_transfer = 0.0
+    fans_electricity = 0.0
 
-    for row in doc.get("results", []):
-        datetime_str = row.get("Date/Time", "").strip()
-        
-        # Filtre par date
-        if normalized_date and not datetime_str.startswith(normalized_date):
-            continue
-            
-        # Filtre par heure
-        if hour:
-            time_parts = datetime_str.split("  ")
-            if len(time_parts) < 2 or not time_parts[1].startswith(f"{hour.zfill(2)}:"):
+    for doc in docs:
+        for row in doc.get("results", []):
+            datetime_str = row.get("Date/Time", "").strip()
+            # Filtre par date
+            if normalized_date and not datetime_str.startswith(normalized_date):
                 continue
-
-        # Extraction des données en une seule passe
-        for key, value in row.items():
-            if key == "Date/Time":
-                continue
-            
-            key_lower = key.lower()
-
-            # Somme de l'énergie
-            if key.strip().lower().startswith("electricity:zone"):
-                try:
-                    total_energy += float(value)
-
-                except Exception:
-                    pass
-            
-            # Consommation détaillée
-            if "interiorequipment" in key_lower:
-                try:
-                    energy_equipment += float(value)
-                except Exception:
-                    pass
-            
-            if "interiorlights" in key_lower:
-                try:
-                    energy_lights += float(value)
-                except Exception:
-                    pass
-
-            # Liste des valeurs PMV
-            if "thermal comfort fanger model pmv" in key_lower:
-                try:
-                    pmv_values.append(float(value))
-                except Exception:
-                    pass
-
-            # Liste des valeurs de Température
-            if "zone thermostat air temperature" in key_lower:
-                try:
-                    temperature_values.append(float(value))
-                except Exception:
-                    pass
-            
-            # Liste des valeurs d'Humidité
-            if "air relative humidity" in key_lower:
-                try:
-                    humidity_values.append(float(value))
-                except Exception:
-                    pass
+            # Filtre par heure
+            if hour:
+                time_parts = datetime_str.split("  ")
+                if len(time_parts) < 2 or not time_parts[1].startswith(f"{hour.zfill(2)}:"):
+                    continue
+            # Extraction des données en une seule passe
+            for key, value in row.items():
+                if key == "Date/Time":
+                    continue
+                key_lower = key.lower()
+                # Somme de l'énergie
+                if key.strip().lower().startswith("electricity:zone"):
+                    try:
+                        total_energy += float(value)
+                    except Exception:
+                        pass
+                # Somme de l'énergie transférée (EnergyTransfer:Zone)
+                if key.strip().lower().startswith("energytransfer:zone"):
+                    try:
+                        total_energy_transfer += float(value)
+                    except Exception:
+                        pass
+                # Somme du heating transfer
+                if key.strip().lower().startswith("heating:energytransfer:zone"):
+                    try:
+                        total_heating_transfer += float(value)
+                    except Exception:
+                        pass
+                # Somme du cooling transfer
+                if key.strip().lower().startswith("cooling:energytransfer:zone"):
+                    try:
+                        total_cooling_transfer += float(value)
+                    except Exception:
+                        pass
+                # Somme de la consommation des ventilateurs (Fans:Electricity)
+                if "fans:electricity" in key_lower:
+                    try:
+                        fans_electricity += float(value)
+                    except Exception:
+                        pass
+                # Consommation détaillée
+                if "interiorequipment" in key_lower:
+                    try:
+                        energy_equipment += float(value)
+                    except Exception:
+                        pass
+                if "interiorlights" in key_lower:
+                    try:
+                        energy_lights += float(value)
+                    except Exception:
+                        pass
+                # Liste des valeurs PMV
+                if "thermal comfort fanger model pmv" in key_lower:
+                    try:
+                        pmv_values.append(float(value))
+                    except Exception:
+                        pass
+                # Liste des valeurs de Température
+                if "zone thermostat air temperature" in key_lower:
+                    try:
+                        temperature_values.append(float(value))
+                    except Exception:
+                        pass
+                # Liste des valeurs d'Humidité
+                if "air relative humidity" in key_lower:
+                    try:
+                        humidity_values.append(float(value))
+                    except Exception:
+                        pass
 
     final_temperature = temperature_values
     if len(temperature_values) == 1:
         final_temperature = temperature_values[0]
+    elif len(temperature_values) > 1:
+        final_temperature = float(np.mean(temperature_values))
+    elif len(temperature_values) == 0:
+        final_temperature = None
 
     final_pmv = pmv_values
     if len(pmv_values) == 1:
         final_pmv = pmv_values[0]
+    elif len(pmv_values) > 1:
+        final_pmv = float(np.mean(pmv_values))
+    elif len(pmv_values) == 0:
+        final_pmv = None
 
     final_humidity = humidity_values
     if len(humidity_values) == 1:
         final_humidity = humidity_values[0]
+    elif len(humidity_values) > 1:
+        final_humidity = float(np.mean(humidity_values))
+    elif len(humidity_values) == 0:
+        final_humidity = None
 
     return {
         "simulation_name": sim_name,
-        "room": room,
+        "room": room if room else "ALL",
         "date": date,
         "hour": hour,
+        #TOTAL_GLOBAL = total energy(light+equipment) + total energy transfer(cooling+heating) + fans
         "data": {
+
             "total_energy_kwh": total_energy / 3600000,
             "detailed_energy_kwh": {
                 "equipment": energy_equipment / 3600000,
                 "lights": energy_lights / 3600000
             },
-            "total_energy": total_energy ,
-            "detailed_energy": {
-                "equipment": energy_equipment ,
-                "lights": energy_lights 
+
+            "total_energy_transfer_kwh": total_energy_transfer / 3600000,
+            "detailed_energy_transfer": {
+                "total_heating_transfer_kwh": total_heating_transfer / 3600000,
+                "total_cooling_transfer_kwh": total_cooling_transfer / 3600000,
             },
+
+            "fans_electricity_kwh": fans_electricity / 3600000,
+
+            "total_energy_consommation": (total_energy + total_energy_transfer + fans_electricity) / 3600000,
+
+
             "pmv_values": final_pmv,
             "temperature_values": final_temperature,
-            "humidity_values": final_humidity
+            "humidity_values": final_humidity,
+            
         },
-        
     }
+
+@app.get("/get_idf_objects/{file_id}")
+def get_idf_objects(file_id: str):
+    """
+    Parse un fichier IDF et retourne sa structure en JSON.
+    Utilise eppy pour une analyse robuste.
+    """
+    try:
+        file_doc = input_files.find_one({"_id": ObjectId(file_id)})
+    except Exception:
+        raise HTTPException(status_code=400, detail="ID de fichier invalide")
+    if not file_doc:
+        raise HTTPException(status_code=404, detail="Fichier non trouvé")
+
+    # Utiliser un fichier temporaire pour eppy
+    tmp_path = ""
+    try:
+        with tempfile.NamedTemporaryFile(mode='w+', delete=False, suffix=".idf", encoding='utf-8') as tmp:
+            if "content_b64" in file_doc:
+                content = base64.b64decode(file_doc["content_b64"]).decode('utf-8')
+            elif "content" in file_doc:
+                content = file_doc["content"]
+            else:
+                raise HTTPException(status_code=404, detail="Contenu du fichier introuvable")
+            tmp.write(content)
+            tmp_path = tmp.name
+
+        iddfile = "C:\\EnergyPlusV9-4-0\\Energy+.idd"
+        IDF.setiddname(iddfile)
+        idf = IDF(tmp_path)
+        
+        structured_idf = {}
+        for obj_type in idf.idfobjects:
+            obj_type_upper = obj_type.upper()
+            if not idf.idfobjects[obj_type]:
+                continue
+            
+            structured_idf[obj_type_upper] = []
+            for instance in idf.idfobjects[obj_type]:
+                fields = {fn: fv for fn, fv in zip(instance.fieldnames, instance.fieldvalues)}
+                structured_idf[obj_type_upper].append({"fields": fields})
+
+        return structured_idf
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erreur lors du parsing IDF avec eppy: {str(e)}")
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+
+class IDFFieldUpdate(BaseModel):
+    object_type: str
+    object_index: int
+    field_name: str
+    new_value: str
+
+@app.post("/update_idf_field/{file_id}")
+def update_idf_field(file_id: str, update_data: IDFFieldUpdate):
+    """Met à jour un champ spécifique dans un fichier IDF et retourne le nouveau contenu."""
+    try:
+        file_doc = input_files.find_one({"_id": ObjectId(file_id)})
+    except Exception:
+        raise HTTPException(status_code=400, detail="ID de fichier invalide")
+    if not file_doc:
+        raise HTTPException(status_code=404, detail="Fichier non trouvé")
+
+    tmp_path = ""
+    try:
+        with tempfile.NamedTemporaryFile(mode='w+', delete=False, suffix=".idf", encoding='utf-8') as tmp:
+            if "content_b64" in file_doc:
+                content = base64.b64decode(file_doc["content_b64"]).decode('utf-8')
+            else:
+                content = file_doc["content"]
+            tmp.write(content)
+            tmp_path = tmp.name
+
+        iddfile = "C:\\EnergyPlusV9-4-0\\Energy+.idd"
+        IDF.setiddname(iddfile)
+        idf = IDF(tmp_path)
+        
+        # Accéder à l'objet et mettre à jour le champ
+        objects_of_type = idf.idfobjects.get(update_data.object_type.upper())
+        if not objects_of_type or update_data.object_index >= len(objects_of_type):
+            raise HTTPException(status_code=404, detail="Objet IDF non trouvé (type ou index invalide)")
+
+        target_object = objects_of_type[update_data.object_index]
+        
+        if not target_object:
+            raise HTTPException(status_code=404, detail="Objet IDF non trouvé")
+        
+        setattr(target_object, update_data.field_name, update_data.new_value)
+        
+        idf.save() # Sauvegarde les modifications dans le fichier temporaire
+
+        # Lire le nouveau contenu
+        with open(tmp_path, "r", encoding='utf-8') as f:
+            new_content = f.read()
+
+        # Mettre à jour dans MongoDB et retourner
+        new_content_b64 = base64.b64encode(new_content.encode('utf-8')).decode('ascii')
+        input_files.update_one(
+            {"_id": ObjectId(file_id)},
+            {"$set": {"content_b64": new_content_b64}}
+        )
+
+        return {"status": "success", "new_content": new_content}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erreur lors de la mise à jour de l'IDF: {str(e)}")
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            os.unlink(tmp_path)
 
 if __name__ == "__main__":
     import uvicorn

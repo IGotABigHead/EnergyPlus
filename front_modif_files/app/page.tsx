@@ -6,6 +6,8 @@ import { FileTextIcon, SaveIcon, RotateCcwIcon, DownloadIcon } from './component
 import IDFEditor from './components/IDFEditor'
 import SimulationSelector from './components/SimulationSelector'
 import FileUploader from './components/FileUploader'
+import EPWQuickEditor from './components/EPWQuickEditor'
+import IDFQuickEditor from './components/IDFQuickEditor'
 
 const API_BASE_URL = 'http://localhost:8000'
 
@@ -381,19 +383,31 @@ export default function Home() {
                     </button>
                   </div>
                   {fileType === 'idf' ? (
-                    <IDFEditor
-                      content={idfContent}
-                      onChange={setIdfContent}
-                      filename={`${selectedSimulation}.idf`}
-                      isLoading={isLoading}
-                    />
+                    <>
+                      <IDFQuickEditor
+                        fileId={idfFileId}
+                        onChange={setIdfContent}
+                      />
+                      <IDFEditor
+                        content={idfContent}
+                        onChange={setIdfContent}
+                        filename={`${selectedSimulation}.idf`}
+                        isLoading={isLoading}
+                      />
+                    </>
                   ) : (
-                    <IDFEditor
-                      content={epwContent}
-                      onChange={setEpwContent}
-                      filename={`${selectedSimulation}.epw`}
-                      isLoading={isLoading}
-                    />
+                    <>
+                      <EPWQuickEditor
+                        content={epwContent}
+                        onChange={setEpwContent}
+                      />
+                      <IDFEditor
+                        content={epwContent}
+                        onChange={setEpwContent}
+                        filename={`${selectedSimulation}.epw`}
+                        isLoading={isLoading}
+                      />
+                    </>
                   )}
                 </>
               ) : (
