@@ -1,7 +1,7 @@
-from fastapi import FastAPI, HTTPException, Query, Body, UploadFile, File
+from fastapi import FastAPI, HTTPException, Query, Body, UploadFile, File, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from pymongo import MongoClient
-from bson import ObjectId
+from sqlalchemy import create_engine, Column, Integer, String, DateTime, Float, ForeignKey, Text, func
+from sqlalchemy.orm import sessionmaker, relationship, Session, declarative_base
 from datetime import datetime
 from typing import List, Dict, Optional
 import tempfile
@@ -14,6 +14,7 @@ import shutil
 import re
 from pydantic import BaseModel
 import numpy as np
+from sqlalchemy.dialects.mysql import LONGTEXT
 
 # Ajouter le chemin vers eppy
 pathnameto_eppy = 'C:\\Users\\Cesi\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\site-packages\\eppy'
@@ -21,205 +22,198 @@ sys.path.append(pathnameto_eppy)
 
 from eppy.modeleditor import IDF
 
+# --- Configuration SQLAlchemy ---
+DATABASE_URL = "mysql+mysqldb://root:root@localhost/energyplus"  # Adaptez avec vos identifiants
+
+engine = create_engine(DATABASE_URL)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+Base = declarative_base()
+
+# --- Modèles SQLAlchemy ---
+class InputFile(Base):
+    __tablename__ = "input_files"
+    id = Column(Integer, primary_key=True, index=True)
+    file_type = Column(String(50), index=True)
+    filename = Column(String(255))
+    content_b64 = Column(LONGTEXT)
+    upload_date = Column(DateTime, default=datetime.now)
+    version = Column(Integer, default=1)
+    previous_version_id = Column(Integer, ForeignKey("input_files.id"), nullable=True)
+
+class Simulation(Base):
+    __tablename__ = "simulations"
+    id = Column(Integer, primary_key=True, index=True)
+    simulation_name = Column(String(100), unique=True, index=True)
+    idf_file_id = Column(Integer, ForeignKey("input_files.id"))
+    epw_file_id = Column(Integer, ForeignKey("input_files.id"))
+    timestamp = Column(DateTime, default=datetime.now)
+
+    idf_file = relationship("InputFile", foreign_keys=[idf_file_id])
+    epw_file = relationship("InputFile", foreign_keys=[epw_file_id])
+
+class Zone(Base):
+    __tablename__ = "zones"
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(100), unique=True, index=True)
+
+class Result(Base):
+    __tablename__ = "results"
+    id = Column(Integer, primary_key=True, index=True)
+    simulation_id = Column(Integer, ForeignKey("simulations.id"))
+    zone_id = Column(Integer, ForeignKey("zones.id"))
+    datetime = Column(String(100))
+    variable = Column(String(100))
+    value = Column(Float)
+
+# Création des tables dans la base de données
+Base.metadata.create_all(bind=engine)
+
 app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],  # autorise ton front Next.js
+    allow_origins=["http://localhost:3000"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Connexion à MongoDB
-client = MongoClient('mongodb://localhost:27017/')
-db = client['EnergyPlus']
-simulation_runs = db['simulation_runs']
-input_files = db['input_files']
-
-#----------------------------#
-#----- route de base --------#
-#----------------------------#
-
-@app.get("/")
-def read_root():
-    return {"message": "EnergyPlus Data API"}
-
-@app.get("/simulations")
-def get_simulations():
-    """Récupère la liste de toutes les simulations disponibles"""
-    simulations = simulation_runs.distinct("simulation_name")
-    return {"simulations": simulations}
-
-@app.get("/data/{simulation_name}")
-def get_simulation_data(simulation_name: str):
-    """Récupère toutes les données d'une simulation spécifique"""
-    doc = simulation_runs.find_one({"simulation_name": simulation_name})
-    if not doc:
-        raise HTTPException(status_code=404, detail="Simulation non trouvée")
-    return {"data": doc.get("results", [])}
-
+# --- Dépendance pour la session de base de données ---
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
 
 #----------------------------#
 #----- Interface web --------#
 #----------------------------#
 
 @app.get("/input_file/by_id/{file_id}")
-def get_input_file_by_id(file_id: str):
-    try:
-        file_doc = input_files.find_one({"_id": ObjectId(file_id)})
-    except Exception:
-        raise HTTPException(status_code=400, detail="ID invalide")
+def get_input_file_by_id(file_id: int, db: Session = Depends(get_db)):
+    file_doc = db.query(InputFile).filter(InputFile.id == file_id).first()
     if not file_doc:
         raise HTTPException(status_code=404, detail="Fichier non trouvé")
-    # Correction rétrocompatibilité
-    if "content" in file_doc:
-        content = file_doc["content"]
-    elif "content_b64" in file_doc:
-        content = base64.b64decode(file_doc["content_b64"]).decode('utf-8')
-    else:
-        content = None
+
+    content = base64.b64decode(file_doc.content_b64).decode('utf-8')
     return {
-        "_id": str(file_doc["_id"]),
-        "file_type": file_doc["file_type"],
-        "filename": file_doc["filename"],
+        "_id": str(file_doc.id),
+        "file_type": file_doc.file_type,
+        "filename": file_doc.filename,
         "content": content
     }
 
-
 @app.get("/input_file/by_simulation/{simulation_name}")
-def get_input_files_by_simulation(simulation_name: str):
-    doc = simulation_runs.find_one({"simulation_name": simulation_name})
-    if not doc:
+def get_input_files_by_simulation(simulation_name: str, db: Session = Depends(get_db)):
+    sim = db.query(Simulation).filter(Simulation.simulation_name == simulation_name).first()
+    if not sim:
         raise HTTPException(status_code=404, detail="Simulation non trouvée")
-    idf_file = input_files.find_one({"_id": doc["idf_file_id"]})
-    epw_file = input_files.find_one({"_id": doc["epw_file_id"]})
+
     def extract_content(file_doc):
         if not file_doc:
             return None
-        if "content" in file_doc:
-            content = file_doc["content"]
-        elif "content_b64" in file_doc:
-            content = base64.b64decode(file_doc["content_b64"]).decode('utf-8')
-        else:
-            content = None
+        content = base64.b64decode(file_doc.content_b64).decode('utf-8')
         return {
-            "_id": str(file_doc["_id"]),
-            "filename": file_doc["filename"],
+            "_id": str(file_doc.id),
+            "filename": file_doc.filename,
             "content": content
         }
     return {
-        "idf": extract_content(idf_file),
-        "epw": extract_content(epw_file)
+        "idf": extract_content(sim.idf_file),
+        "epw": extract_content(sim.epw_file)
     }
 
-
 @app.post("/input_file/update/{file_id}")
-def update_input_file(file_id: str, content: str = Body(...)):
-    try:
-        result = input_files.update_one({"_id": ObjectId(file_id)}, {"$set": {"content": content}})
-    except Exception:
-        raise HTTPException(status_code=400, detail="ID invalide")
-    if result.matched_count == 0:
+def update_input_file(file_id: int, content: str = Body(...), db: Session = Depends(get_db)):
+    file_doc = db.query(InputFile).filter(InputFile.id == file_id).first()
+    if not file_doc:
         raise HTTPException(status_code=404, detail="Fichier non trouvé")
+    
+    content_b64 = base64.b64encode(content.encode('utf-8')).decode('ascii')
+    file_doc.content_b64 = content_b64
+    db.commit()
     return {"status": "ok"}
 
-
 @app.get("/input_files/")
-def list_input_files(file_type: str = Query(...)):
-    files = list(input_files.find({"file_type": file_type}))
+def list_input_files(file_type: str = Query(...), db: Session = Depends(get_db)):
+    files = db.query(InputFile).filter(InputFile.file_type == file_type).all()
     return [
         {
-            "_id": str(f["_id"]),
-            "filename": f["filename"],
-            "upload_date": f.get("upload_date"),
-            "version": f.get("version", 1)
+            "_id": str(f.id),
+            "filename": f.filename,
+            "upload_date": f.upload_date,
+            "version": f.version
         }
         for f in files
     ]
 
 @app.post("/input_file/save_new_version/{file_id}")
-def save_new_version(file_id: str, content: str = Body(...), filename: Optional[str] = Body(None)):
-    orig = input_files.find_one({"_id": ObjectId(file_id)})
+def save_new_version(file_id: int, content: str = Body(...), filename: Optional[str] = Body(None), db: Session = Depends(get_db)):
+    orig = db.query(InputFile).filter(InputFile.id == file_id).first()
     if not orig:
         raise HTTPException(status_code=404, detail="Fichier d'origine non trouvé")
-    base_filename = filename if filename else orig["filename"]
-    version_count = input_files.count_documents({"filename": base_filename})
-    # Encodage base64 systématique
-    try:
-        # Si le contenu est déjà du base64 (cas rare), on ne le re-encode pas
-        base64.b64decode(content)
-        content_b64 = content
-    except Exception:
-        content_b64 = base64.b64encode(content.encode('utf-8')).decode('ascii')
-    new_doc = {
-        "file_type": orig["file_type"],
-        "filename": base_filename,
-        "content_b64": content_b64,
-        "upload_date": datetime.now(),
-        "previous_version_id": str(orig["_id"]),
-        "version": version_count + 1
-    }
-    result = input_files.insert_one(new_doc)
-    return {"status": "ok", "new_id": str(result.inserted_id)}
+
+    base_filename = filename if filename else orig.filename
+    version_count = db.query(InputFile).filter(InputFile.filename == base_filename).count()
+    
+    content_b64 = base64.b64encode(content.encode('utf-8')).decode('ascii')
+    
+    new_file = InputFile(
+        file_type=orig.file_type,
+        filename=base_filename,
+        content_b64=content_b64,
+        upload_date=datetime.now(),
+        previous_version_id=orig.id,
+        version=version_count + 1
+    )
+    db.add(new_file)
+    db.commit()
+    db.refresh(new_file)
+    return {"status": "ok", "new_id": str(new_file.id)}
 
 @app.post("/input_file/upload/")
-async def upload_input_file(file: UploadFile = File(...), file_type: str = Query(...)):
+async def upload_input_file(file: UploadFile = File(...), file_type: str = Query(...), db: Session = Depends(get_db)):
     content_bytes = await file.read()
     content_b64 = base64.b64encode(content_bytes).decode('ascii')
-    doc = {
-        "file_type": file_type,
-        "filename": file.filename,
-        "content_b64": content_b64,
-        "upload_date": datetime.now(),
-        "version": 1
-    }
-    result = input_files.insert_one(doc)
-    return {"status": "ok", "new_id": str(result.inserted_id)}
-
+    
+    new_file = InputFile(
+        file_type=file_type,
+        filename=file.filename,
+        content_b64=content_b64,
+        upload_date=datetime.now(),
+        version=1
+    )
+    db.add(new_file)
+    db.commit()
+    db.refresh(new_file)
+    return {"status": "ok", "new_id": str(new_file.id)}
 
 @app.post("/run_simulation/")
-def run_simulation(idf_file_id: str = Body(...), epw_file_id: str = Body(...)):
-    # Récupérer les fichiers depuis MongoDB
-    idf_doc = input_files.find_one({"_id": ObjectId(idf_file_id)})
-    epw_doc = input_files.find_one({"_id": ObjectId(epw_file_id)})
+def run_simulation(idf_file_id: int = Body(...), epw_file_id: int = Body(...), db: Session = Depends(get_db)):
+    idf_doc = db.query(InputFile).filter(InputFile.id == idf_file_id).first()
+    epw_doc = db.query(InputFile).filter(InputFile.id == epw_file_id).first()
     if not idf_doc or not epw_doc:
         raise HTTPException(status_code=404, detail="Fichier IDF ou EPW non trouvé")
 
-    # Créer des fichiers temporaires
     with tempfile.TemporaryDirectory() as tmpdir:
-        idf_path = os.path.join(tmpdir, idf_doc["filename"])
-        epw_path = os.path.join(tmpdir, epw_doc["filename"])
+        idf_path = os.path.join(tmpdir, idf_doc.filename)
+        epw_path = os.path.join(tmpdir, epw_doc.filename)
         
-        # Écrire les fichiers temporaires
-        # IDF
-        if "content_b64" in idf_doc:
-            idf_bytes = base64.b64decode(idf_doc["content_b64"])
-            with open(idf_path, "wb") as f:
-                f.write(idf_bytes)
-        else:
-            with open(idf_path, "w", encoding="utf-8") as f:
-                f.write(idf_doc["content"])
-        # EPW
-        if "content_b64" in epw_doc:
-            epw_bytes = base64.b64decode(epw_doc["content_b64"])
-            with open(epw_path, "wb") as f:
-                f.write(epw_bytes)
-        else:
-            with open(epw_path, "w", encoding="utf-8") as f:
-                f.write(epw_doc["content"])
+        idf_bytes = base64.b64decode(idf_doc.content_b64)
+        with open(idf_path, "wb") as f:
+            f.write(idf_bytes)
+        
+        epw_bytes = base64.b64decode(epw_doc.content_b64)
+        with open(epw_path, "wb") as f:
+            f.write(epw_bytes)
 
         try:
-            # Configuration EnergyPlus
             iddfile = "C:\\EnergyPlusV9-4-0\\Energy+.idd"
             IDF.setiddname(iddfile)
-            
-            # Créer l'objet IDF
             idf = IDF(idf_path, epw_path)
             
-            # Options de simulation
             idfversion = idf.idfobjects['version'][0].Version_Identifier.split('.')
             idfversion.extend([0] * (3 - len(idfversion)))
-            idfversionstr = '-'.join([str(item) for item in idfversion])
             fname = idf.idfname
             options = {
                 'output_prefix': os.path.basename(fname).split('.')[0],
@@ -229,32 +223,38 @@ def run_simulation(idf_file_id: str = Body(...), epw_file_id: str = Body(...)):
                 'expandobjects': True
             }
             
-            # Lancer la simulation
             idf.encoding = "utf-8"
             idf.run(**options)
             
-            # Chercher le premier fichier CSV généré dans le dossier temporaire
             csv_dir = os.path.dirname(fname)
             csv_files = [f for f in os.listdir(csv_dir) if f.endswith('.csv')]
             if csv_files:
                 csv_output_path = os.path.join(csv_dir, csv_files[0])
                 
-                # Nommage de la simulation avec version du fichier IDF
                 base_name = os.path.basename(idf_path).replace('.idf', '')
-                # Chercher le nombre de simulations existantes avec ce base_name
-                existing_sim_names = simulation_runs.distinct("simulation_name", {"simulation_name": {"$regex": f"^{re.escape(base_name)}_\\d+$"}})
-                existing_count = len(existing_sim_names)
-                simulation_name = f"{base_name}_{existing_count + 1}"
                 
-                # Copie du fichier de résultats
-                res_dir = r"C:\Users\Cesi\Desktop\IR_THEO_BOSSET\Solution\res"
+                existing_sim_count = db.query(Simulation).filter(Simulation.simulation_name.like(f"{base_name}_%")).count()
+                simulation_name = f"{base_name}_{existing_sim_count + 1}"
+                
+                res_dir = r"C:\Users\Cesi\Desktop\IR_THEO_BOSSET\Git\res"
                 os.makedirs(res_dir, exist_ok=True)
                 dest_csv_path = os.path.join(res_dir, f"{simulation_name}.csv")
                 shutil.copy2(csv_output_path, dest_csv_path)
 
-                # Lecture et stockage dans MongoDB
                 df = pd.read_csv(csv_output_path)
-                store_results_by_zone(df, simulation_name, ObjectId(idf_file_id), ObjectId(epw_file_id))
+                
+                # Créer la simulation dans la base de données
+                new_sim = Simulation(
+                    simulation_name=simulation_name,
+                    idf_file_id=idf_file_id,
+                    epw_file_id=epw_file_id,
+                    timestamp=datetime.now()
+                )
+                db.add(new_sim)
+                db.commit()
+                db.refresh(new_sim)
+
+                store_results_by_zone(df, new_sim.id, db)
 
                 return {
                     "status": "success",
@@ -265,515 +265,368 @@ def run_simulation(idf_file_id: str = Body(...), epw_file_id: str = Body(...)):
                     "stderr": ""
                 }
             else:
-                return {
-                    "status": "error",
-                    "message": "Aucun fichier CSV trouvé dans le dossier temporaire après la simulation.",
-                    "stdout": "",
-                    "stderr": "Aucun fichier CSV trouvé dans le dossier temporaire après la simulation."
-                }
+                return {"status": "error", "message": "Aucun fichier CSV de résultat trouvé."}
                 
         except Exception as e:
-            return {
-                "status": "error",
-                "message": str(e),
-                "stdout": "",
-                "stderr": str(e)
-            }
-        
-
-
+            return {"status": "error", "message": str(e)}
 
 #----------------------------#
-#---route Jumeau Numérique---#
+#------Jumeau Numérique------#
 #----------------------------#
-
-# Si aucun nom de simulation n'est fourni dans la requete, prends par défaut la simulation la plus récente
-def get_latest_simulation_name_if_none(simulation_name: Optional[str]) -> str:
-    """
-    Retourne le nom de la simulation fournie, ou récupère la plus récente si non fournie.
-    """
+def get_latest_simulation_name_if_none(simulation_name: Optional[str], db: Session) -> str:
     if simulation_name:
         return simulation_name
-    # Trouve la dernière simulation en se basant sur le timestamp
-    latest_simulation = simulation_runs.find_one(sort=[("timestamp", -1)])
+    latest_simulation = db.query(Simulation).order_by(Simulation.timestamp.desc()).first()
     if not latest_simulation:
-        raise HTTPException(status_code=404, detail="Aucune simulation trouvée dans la base de données.")
-    return latest_simulation["simulation_name"]
+        raise HTTPException(status_code=404, detail="Aucune simulation trouvée.")
+    return latest_simulation.simulation_name
 
-def normalize_date(date_str: Optional[str]) -> Optional[str]:
-    """Normalise une date JJ/MM pour qu'elle ait toujours des zéros (ex: 1/8 -> 01/08)."""
-    if not date_str:
-        return None
-    try:
-        day, month = date_str.split('/')
-        return f"{day.zfill(2)}/{month.zfill(2)}"
-    except ValueError:
-        return date_str # Retourne tel quel si le format est inattendu
+def normalize_date_str(s):
+    # Enlève les espaces, zéros non significatifs, etc.
+    s = s.strip()
+    s = re.sub(r' +', ' ', s)  # remplace plusieurs espaces par un seul
+    if ' ' in s:
+        date_part = s.split(' ')[0]
+    else:
+        date_part = s
+    # Enlève les zéros non significatifs
+    parts = date_part.split('/')
+    parts = [str(int(p)) for p in parts if p.isdigit()]
+    return '/'.join(parts)
 
-#http://localhost:8000/sum_all_energy/?simulation_name=NR3_V07-24_1&date=01/08
+def normalize_hour_str(s):
+    s = s.strip()
+    if ':' in s:
+        hour_part = s.split(':')[0]
+    else:
+        hour_part = s
+    return str(int(hour_part))  # enlève zéro devant
+
+@app.get("/zones/")
+def get_zones(db: Session = Depends(get_db)):
+    zones = db.query(Zone).all()
+    return [{"id": z.id, "name": z.name} for z in zones]
+
 @app.get("/sum_all_energy/")
 def sum_all_energy(
-    simulation_name: Optional[str] = Query(None, description="Nom de la simulation. Si non fourni, la dernière est utilisée."),
-    date: Optional[str] = Query(None, description="Date au format 'JJ/MM', ex: '01/01' (optionnel)."),
-    hour: Optional[str] = Query(None, description="Heure au format HH (ex: '01', '14').")
+    simulation_name: Optional[str] = Query(None),
+    date: Optional[str] = Query(None),
+    hour: Optional[str] = Query(None),
+    db: Session = Depends(get_db)
 ):
-    """
-    Calcule la somme de toutes les consommations énergétiques pour une simulation et une date/heure données.
-    """
-    sim_name = get_latest_simulation_name_if_none(simulation_name)
-    docs = simulation_runs.find({"simulation_name": sim_name})
-    total = 0.0
-    normalized_date = normalize_date(date)
-    for doc in docs:
-        for row in doc.get("results", []):
-            datetime_str = row.get("Date/Time", "").strip()
-            if normalized_date and not datetime_str.startswith(normalized_date):
-                continue
-            if hour:
-                time_parts = datetime_str.split("  ")
-                if len(time_parts) < 2 or not time_parts[1].startswith(f"{hour.zfill(2)}:"):
-                    continue
+    sim_name = get_latest_simulation_name_if_none(simulation_name, db)
+    sim = db.query(Simulation).filter(Simulation.simulation_name == sim_name).first()
+    if not sim:
+        raise HTTPException(status_code=404, detail="Simulation non trouvée")
 
-            for key, value in row.items():
-                if key == "Date/Time":
-                    continue
-                key_lower = key.lower()
-                if key.strip().lower().startswith("electricity:zone"):
-                    try:
-                        total += float(value)
+    query = db.query(func.sum(Result.value)).filter(Result.variable == 'Electricity')
+    query = query.filter(Result.simulation_id == sim.id)
 
-                    except Exception:
-                        continue
+    normalized_date = normalize_date_str(date)
+    if normalized_date:
+        query = query.filter(Result.datetime.like(f"{normalized_date}%"))
+    if hour:
+        query = query.filter(Result.datetime.like(f"%{hour.zfill(2)}:%"))
+        
+    total = query.scalar() or 0.0
     return {
-        "simulation_name": sim_name,
-        "date": date,
-        "hour": hour,
-        "total_energy_all_fields": total,
-        "total_energy_all_fields_kwh": total/3600000
+        "simulation_name": sim_name, "date": date, "hour": hour,
+        "total_energy_all_fields": total, "total_energy_all_fields_kwh": total/3600000
     }
 
-#http://localhost:8000/sum_room_energy/?simulation_name=NR3_V07-24_1&date=01/08&room=TESLA
 @app.get("/sum_room_energy/")
 def sum_room_energy(
-    simulation_name: Optional[str] = Query(None, description="Nom de la simulation. Si non fourni, la dernière est utilisée."),
-    date: Optional[str] = Query(None, description="Date au format 'JJ/MM', ex: '01/01' (optionnel)."),
-    hour: Optional[str] = Query(None, description="Heure au format HH (ex: '01', '14')."),
-    room: str = Query(..., description="Nom de la salle, ex: TESLA")
+    simulation_name: Optional[str] = Query(None),
+    date: Optional[str] = Query(None),
+    hour: Optional[str] = Query(None),
+    room: str = Query(...),
+    db: Session = Depends(get_db)
 ):
-    """
-    Calcule la somme de la consommation énergétique pour une salle donnée, à une date donnée, dans une simulation.
-    """
-    sim_name = get_latest_simulation_name_if_none(simulation_name)
-    doc = simulation_runs.find_one({"simulation_name": sim_name, "zone": room})
-    if not doc:
-        raise HTTPException(status_code=404, detail="Simulation ou zone non trouvée")
-    total = 0.0
-    normalized_date = normalize_date(date)
-    for row in doc.get("results", []):
-        datetime_str = row.get("Date/Time", "").strip()
-        if normalized_date and not datetime_str.startswith(normalized_date):
-            continue
-        if hour:
-            time_parts = datetime_str.split("  ")
-            if len(time_parts) < 2 or not time_parts[1].startswith(f"{hour.zfill(2)}:"):
-                continue
+    sim_name = get_latest_simulation_name_if_none(simulation_name, db)
+    sim = db.query(Simulation).filter(Simulation.simulation_name == sim_name).first()
+    if not sim:
+        raise HTTPException(status_code=404, detail="Simulation non trouvée")
+    
+    zone = db.query(Zone).filter(Zone.name == room).first()
+    if not zone:
+        raise HTTPException(status_code=404, detail="Zone non trouvée")
 
-        for key, value in row.items():
-            if key == "Date/Time":
-                continue
-            key_lower = key.lower()
-            if key.strip().lower().startswith("electricity:zone"):
-                try:
-                    total += float(value)
-                except Exception:
-                    continue
+    query = db.query(func.sum(Result.value)).filter(Result.variable == 'Electricity')
+    query = query.filter(Result.simulation_id == sim.id, Result.zone_id == zone.id)
+
+    normalized_date = normalize_date_str(date)
+    if normalized_date:
+        query = query.filter(Result.datetime.like(f"{normalized_date}%"))
+    if hour:
+        query = query.filter(Result.datetime.like(f"%{hour.zfill(2)}:%"))
+    
+    total = query.scalar() or 0.0
     return {
-        "simulation_name": sim_name,
-        "date": date,
-        "hour": hour,
-        "room": room,
-        "total_energy_room": total,
-        "total_energy_room_kwh": total/3600000
+        "simulation_name": sim_name, "date": date, "hour": hour, "room": room,
+        "total_energy_room": total, "total_energy_room_kwh": total/3600000
     }
 
-
-
-#http://localhost:8000/sum_by_poste/?simulation_name=NR3_V07-24_1&poste=InteriorEquipment&date=01/08
 @app.get("/sum_by_poste/")
 def sum_by_poste(
-    simulation_name: Optional[str] = Query(None, description="Nom de la simulation. Si non fourni, la dernière est utilisée."),
-    date: Optional[str] = Query(None, description="Date au format 'JJ/MM', ex: '01/01' (optionnel)."),
-    hour: Optional[str] = Query(None, description="Heure au format HH (ex: '01', '14')."),
-    poste: str = Query(None, description="Nom du poste (optionnel, filtre partiel sur le nom de la colonne)")
+    simulation_name: Optional[str] = Query(None),
+    date: Optional[str] = Query(None),
+    hour: Optional[str] = Query(None),
+    poste: str = Query(...),
+    db: Session = Depends(get_db)
 ):
-    """
-    Calcule la consommation totale pour un poste donné (ex: 'Heating:Electricity') dans une simulation, éventuellement à une date donnée.
-    """
-    sim_name = get_latest_simulation_name_if_none(simulation_name)
-    docs = simulation_runs.find({"simulation_name": sim_name})
-    total = 0.0
-    normalized_date = normalize_date(date)
-    for doc in docs:
-        for row in doc.get("results", []):
-            datetime_str = row.get("Date/Time", "").strip()
-            if normalized_date and not datetime_str.startswith(normalized_date):
-                continue
-            if hour:
-                time_parts = datetime_str.split("  ")
-                if len(time_parts) < 2 or not time_parts[1].startswith(f"{hour.zfill(2)}:"):
-                    continue
-            
-            for key, value in row.items():
-                if key in ["Date/Time"]:
-                    continue
-                if poste and poste.lower() not in key.lower():
-                    continue
-                try:
-                    total += float(value)
-                except Exception:
-                    continue
+    sim_name = get_latest_simulation_name_if_none(simulation_name, db)
+    sim = db.query(Simulation).filter(Simulation.simulation_name == sim_name).first()
+    if not sim:
+        raise HTTPException(status_code=404, detail="Simulation non trouvée")
+
+    query = db.query(func.sum(Result.value)).filter(Result.variable == poste)
+    query = query.filter(Result.simulation_id == sim.id)
+    
+    normalized_date = normalize_date_str(date)
+    if normalized_date:
+        query = query.filter(Result.datetime.like(f"{normalized_date}%"))
+    if hour:
+        query = query.filter(Result.datetime.like(f"%{hour.zfill(2)}:%"))
+
+    total = query.scalar() or 0.0
     return {
-        "simulation_name": sim_name,
-        "date": date,
-        "hour": hour,
-        "poste": poste,
-        "total_energy_poste": total,
-        "total_energy_poste_kwh": total/3600000
+        "simulation_name": sim_name, "date": date, "hour": hour, "poste": poste,
+        "total_energy_poste": total, "total_energy_poste_kwh": total/3600000
     }
 
-#http://localhost:8000/sum_by_room_and_poste/?simulation_name=NR3_V07-24_1&poste=InteriorEquipment&room=TESLA&date=01/08&hour=16
 @app.get("/sum_by_room_and_poste/")
 def sum_by_room_and_poste(
-    simulation_name: Optional[str] = Query(None, description="Nom de la simulation. Si non fourni, la dernière est utilisée."),
-    poste: str = Query(..., description="Nom du poste (colonne, ex: 'Heating:Electricity')"),
-    room: str = Query(..., description="Nom de la salle, ex: TESLA"),
-    date: Optional[str] = Query(None, description="Date au format 'JJ/MM', ex: '01/01' (optionnel)."),
-    hour: Optional[str] = Query(None, description="Heure au format HH (ex: '01', '14').")
+    simulation_name: Optional[str] = Query(None),
+    poste: str = Query(...),
+    room: str = Query(...),
+    date: Optional[str] = Query(None),
+    hour: Optional[str] = Query(None),
+    db: Session = Depends(get_db)
 ):
-    """
-    Calcule la consommation totale pour un poste et une salle donnés, à une date donnée, dans une simulation.
-    """
-    sim_name = get_latest_simulation_name_if_none(simulation_name)
-    doc = simulation_runs.find_one({"simulation_name": sim_name, "zone": room})
-    if not doc:
-        raise HTTPException(status_code=404, detail="Simulation ou zone non trouvée")
-    total = 0.0
-    normalized_date = normalize_date(date)
-    for row in doc.get("results", []):
-        datetime_str = row.get("Date/Time", "").strip()
-        if normalized_date and not datetime_str.startswith(normalized_date):
-            continue
-        if hour:
-            time_parts = datetime_str.split("  ")
-            if len(time_parts) < 2 or not time_parts[1].startswith(f"{hour.zfill(2)}:"):
-                continue
-        
-        for key, value in row.items():
-            if poste.lower() in key.lower():
-                try:
-                    total += float(value)
-                except Exception:
-                    continue
+    sim_name = get_latest_simulation_name_if_none(simulation_name, db)
+    sim = db.query(Simulation).filter(Simulation.simulation_name == sim_name).first()
+    if not sim: raise HTTPException(status_code=404, detail="Simulation non trouvée")
+    zone = db.query(Zone).filter(Zone.name == room).first()
+    if not zone: raise HTTPException(status_code=404, detail="Zone non trouvée")
+
+    query = db.query(func.sum(Result.value)).filter(Result.simulation_id == sim.id, Result.zone_id == zone.id)
+    query = query.filter(Result.variable == poste)
+    
+    normalized_date = normalize_date_str(date)
+    if normalized_date:
+        query = query.filter(Result.datetime.like(f"{normalized_date}%"))
+    if hour:
+        query = query.filter(Result.datetime.like(f"%{hour.zfill(2)}:%"))
+
+    total = query.scalar() or 0.0
     return {
-        "simulation_name": sim_name,
-        "poste": poste,
-        "room": room,
-        "date": date,
-        "hour": hour,
-        "total_energy_room_poste": total,
-        "total_energy_room_poste_kwh": total/3600000
+        "simulation_name": sim_name, "poste": poste, "room": room, "date": date, "hour": hour,
+        "total_energy_room_poste": total, "total_energy_room_poste_kwh": total/3600000
     }
 
-# http://localhost:8000/pmv_by_room/?simulation_name=NR3_V07-24_1&room=TESLA&date=01/08&hour=10
 @app.get("/pmv_by_room/")
 def pmv_by_room(
-    simulation_name: Optional[str] = Query(None, description="Nom de la simulation. Si non fourni, la dernière est utilisée."),
-    room: str = Query(..., description="Nom de la salle, ex: TESLA"),
-    date: Optional[str] = Query(None, description="Date au format 'JJ/MM', ex: '01/01' (optionnel)."),
-    hour: Optional[str] = Query(None, description="Heure au format HH (ex: '01', '14').")
+    simulation_name: Optional[str] = Query(None),
+    room: str = Query(...),
+    date: Optional[str] = Query(None),
+    hour: Optional[str] = Query(None),
+    db: Session = Depends(get_db)
 ):
-    """
-    Retourne la liste des valeurs PMV (Thermal Comfort Fanger Model PMV) pour une salle donnée, à une date donnée (optionnelle), dans une simulation.
-    """
-    sim_name = get_latest_simulation_name_if_none(simulation_name)
-    doc = simulation_runs.find_one({"simulation_name": sim_name, "zone": room})
-    if not doc:
-        raise HTTPException(status_code=404, detail="Simulation ou zone non trouvée")
-    pmv_values = []
-    normalized_date = normalize_date(date)
-    for row in doc.get("results", []):
-        datetime_str = row.get("Date/Time", "").strip()
-        if normalized_date and not datetime_str.startswith(normalized_date):
-            continue
-        if hour:
-            time_parts = datetime_str.split("  ")
-            if len(time_parts) < 2 or not time_parts[1].startswith(f"{hour.zfill(2)}:"):
-                continue
-        
-        for key, value in row.items():
-            if "thermal comfort fanger model pmv" in key.lower():
-                try:
-                    pmv_values.append(float(value))
-                except Exception:
-                    continue
-    return {
-        "simulation_name": sim_name,
-        "room": room,
-        "date": date,
-        "hour": hour,
-        "pmv_values": pmv_values
-    }
+    sim_name = get_latest_simulation_name_if_none(simulation_name, db)
+    sim = db.query(Simulation).filter(Simulation.simulation_name == sim_name).first()
+    if not sim: raise HTTPException(status_code=404, detail="Simulation non trouvée")
+    zone = db.query(Zone).filter(Zone.name == room).first()
+    if not zone: raise HTTPException(status_code=404, detail="Zone non trouvée")
 
-# http://localhost:8000/temperature_by_room/?simulation_name=NR3_V07-24_1&room=TESLA&date=01/08
+    query = db.query(Result.value).filter(Result.simulation_id == sim.id, Result.zone_id == zone.id)
+    query = query.filter(Result.variable == 'PMV')
+
+    normalized_date = normalize_date_str(date)
+    if normalized_date:
+        query = query.filter(Result.datetime.like(f"{normalized_date}%"))
+    if hour:
+        query = query.filter(Result.datetime.like(f"%{hour.zfill(2)}:%"))
+
+    pmv_values = [v[0] for v in query.all()]
+    return {"simulation_name": sim_name, "room": room, "date": date, "hour": hour, "pmv_values": pmv_values}
+
 @app.get("/temperature_by_room/")
 def temperature_by_room(
-    simulation_name: Optional[str] = Query(None, description="Nom de la simulation. Si non fourni, la dernière est utilisée."),
-    room: str = Query(..., description="Nom de la salle, ex: TESLA"),
-    date: Optional[str] = Query(None, description="Date au format 'JJ/MM', ex: '01/01' (optionnel)."),
-    hour: Optional[str] = Query(None, description="Heure au format HH (ex: '01', '14').")
+    simulation_name: Optional[str] = Query(None),
+    room: str = Query(...),
+    date: Optional[str] = Query(None),
+    hour: Optional[str] = Query(None),
+    db: Session = Depends(get_db)
 ):
-    """
-    Retourne la liste des valeurs de température (Zone Thermostat Air Temperature) pour une salle donnée, à une date donnée (optionnelle), dans une simulation.
-    """
-    sim_name = get_latest_simulation_name_if_none(simulation_name)
-    doc = simulation_runs.find_one({"simulation_name": sim_name, "zone": room})
-    if not doc:
-        raise HTTPException(status_code=404, detail="Simulation ou zone non trouvée")
-    temperature_values = []
-    normalized_date = normalize_date(date)
-    for row in doc.get("results", []):
-        datetime_str = row.get("Date/Time", "").strip()
-        if normalized_date and not datetime_str.startswith(normalized_date):
+    sim_name = get_latest_simulation_name_if_none(simulation_name, db)
+    sim = db.query(Simulation).filter(Simulation.simulation_name == sim_name).first()
+    if not sim: raise HTTPException(status_code=404, detail="Simulation non trouvée")
+    zone = db.query(Zone).filter(Zone.name == room).first()
+    if not zone: raise HTTPException(status_code=404, detail="Zone non trouvée")
+
+    query = db.query(Result.value).filter(Result.simulation_id == sim.id, Result.zone_id == zone.id)
+    query = query.filter(Result.variable == 'Thermostat')
+
+    normalized_date = normalize_date_str(date)
+    if normalized_date:
+        query = query.filter(Result.datetime.like(f"{normalized_date}%"))
+    if hour:
+        query = query.filter(Result.datetime.like(f"%{hour.zfill(2)}:%"))
+
+    temperature_values = [v[0] for v in query.all()]
+    return {"simulation_name": sim_name, "room": room, "date": date, "hour": hour, "temperature_values": temperature_values}
+
+KEYWORDS = [
+    "Humidity", "Thermostat", "Fans", "Heating", "EnergyTransfer",
+    "Cooling", "InteriorLights", "InteriorEquipment", "Electricity", "PMV"
+]
+
+def extract_zone_and_type(col_name):
+    # Exemple de colonne : "ETAGE:NOBEL:Zone Air Relative Humidity [%](Hourly)"
+    for keyword in KEYWORDS:
+        if keyword.lower() in col_name.lower():
+            # Recherche du nom de la zone (ex: NOBEL)
+            match = re.search(r":([A-Z0-9_]+):", col_name)
+            zone = match.group(1) if match else None
+            return zone, keyword
+    return None, None
+
+def store_results_by_zone(df: pd.DataFrame, simulation_id: int, db: Session):
+    # Récupérer toutes les zones de la base
+    zones = db.query(Zone).all()
+    zone_map = {z.name.upper(): z.id for z in zones}
+
+    for col in df.columns:
+        if col == "Date/Time":
             continue
-        if hour:
-            time_parts = datetime_str.split("  ")
-            if len(time_parts) < 2 or not time_parts[1].startswith(f"{hour.zfill(2)}:"):
-                continue
 
-        for key, value in row.items():
-            if "Zone Thermostat Air Temperature" in key:
-                try:
-                    temperature_values.append(float(value))
-                except Exception:
-                    continue
-    return {
-        "simulation_name": sim_name,
-        "room": room,
-        "date": date,
-        "hour": hour,
-        "temperature_values": temperature_values
-    }
+        # Chercher la zone dans le nom de colonne
+        zone_found = None
+        for zone_name in zone_map:
+            if zone_name in col.upper():
+                zone_found = zone_name
+                break
+        if not zone_found:
+            continue
 
-def store_results_by_zone(df, simulation_name, idf_file_id, epw_file_id):
-    """
-    Partitionne le DataFrame par zone (d'après les colonnes) et insère un document MongoDB par zone.
-    """
-    # Liste des zones explicitement définie
-    zones = ['BUREAUETAGE', 'HALLRDC', 'LOCALTECH', 'LOCALSERVEURS', 'LUMIERE', 'NOBEL', 'TESLA', 'TURING']
-    for zone in zones:
-        # Inclure toutes les colonnes dont le nom contient le nom de la zone (insensible à la casse)
-        zone_cols = [col for col in df.columns if zone.lower() in col.lower()]
-        cols_to_keep = ["Date/Time"] + zone_cols
-        zone_df = df[cols_to_keep].copy()
-        # Nettoyer les espaces dans la colonne Date/Time
-        if "Date/Time" in zone_df.columns:
-            zone_df["Date/Time"] = zone_df["Date/Time"].astype(str).str.strip()
-        doc = {
-            "simulation_name": simulation_name,
-            "zone": zone,
-            "idf_file_id": idf_file_id,
-            "epw_file_id": epw_file_id,
-            "timestamp": datetime.now(),
-            "results": zone_df.to_dict('records')
-        }
-        simulation_runs.insert_one(doc)
+        # Chercher le type de donnée dans le nom de colonne
+        data_type = None
+        for keyword in KEYWORDS:
+            if keyword.lower() in col.lower():
+                data_type = keyword
+                break
+        if not data_type:
+            continue
 
-# http://localhost:8000/room_summary/?simulation_name=NR3_V07-24_1&room=TESLA&hour=16&date=06/26
+        zone_id = zone_map[zone_found]
+        for idx, value in enumerate(df[col]):
+            datetime_val = df["Date/Time"].iloc[idx]
+            result = Result(
+                simulation_id=simulation_id,
+                zone_id=zone_id,
+                datetime=datetime_val,
+                variable=data_type,
+                value=value
+            )
+            db.add(result)
+    db.commit()
+
+def build_like_pattern(date, hour):
+    # Construit un pattern LIKE SQL pour le champ datetime
+    # date attendu au format M/D ou MM/DD
+    if not date:
+        return None
+    date_parts = date.strip().split('/')
+    if len(date_parts) == 2:
+        month = f"{int(date_parts[0]):02d}"
+        day = f"{int(date_parts[1]):02d}"
+        date_sql = f"{month}/{day}"
+    else:
+        date_sql = date.strip()
+    if hour:
+        hour_sql = f"{int(hour):02d}"
+        return f"%{date_sql}%{hour_sql}:%"
+    else:
+        return f"%{date_sql}%"
+
 @app.get("/room_summary/")
 def get_room_summary(
-    simulation_name: Optional[str] = Query(None, description="Nom de la simulation. Si non fourni, la dernière est utilisée."),
-    room: Optional[str] = Query(None, description="Nom de la salle, ex: TESLA. Si non fourni, somme sur toutes les rooms."),
-    date: Optional[str] = Query(None, description="Date au format 'JJ/MM' (optionnel)."),
-    hour: Optional[str] = Query(None, description="Heure au format HH (ex: '01', '14').")
+    simulation_name: Optional[str] = Query(None),
+    room: Optional[str] = Query(None),
+    date: Optional[str] = Query(None),
+    hour: Optional[str] = Query(None),
+    db: Session = Depends(get_db)
 ):
-    """
-    Retourne un résumé complet (énergie, PMV, température, humidité) pour une salle donnée ou la somme sur toutes les salles si non spécifiée.
-    """
-    sim_name = get_latest_simulation_name_if_none(simulation_name)
-    normalized_date = normalize_date(date)
-    if room:
-        docs = [simulation_runs.find_one({"simulation_name": sim_name, "zone": room})]
-    else:
-        docs = list(simulation_runs.find({"simulation_name": sim_name}))
-    if not docs or docs[0] is None:
-        raise HTTPException(status_code=404, detail="Simulation ou zone non trouvée")
+    sim_name = get_latest_simulation_name_if_none(simulation_name, db)
+    sim = db.query(Simulation).filter(Simulation.simulation_name == sim_name).first()
+    if not sim: raise HTTPException(status_code=404, detail="Simulation non trouvée")
 
-    total_energy = 0.0
-    energy_equipment = 0.0
-    energy_lights = 0.0
-    pmv_values = []
-    temperature_values = []
-    humidity_values = []
-    total_energy_transfer = 0.0
-    total_heating_transfer = 0.0
-    total_cooling_transfer = 0.0
+    query = db.query(Result.variable, Result.value, Result.datetime)
+    query = query.filter(Result.simulation_id == sim.id)
+
+    if room:
+        zone = db.query(Zone).filter(Zone.name == room).first()
+        if not zone: raise HTTPException(status_code=404, detail="Zone non trouvée")
+        query = query.filter(Result.zone_id == zone.id)
+
+    # Filtrage SQL performant sur la date et l'heure
+    if date:
+        like_pattern = build_like_pattern(date, hour)
+        if like_pattern:
+            query = query.filter(Result.datetime.like(like_pattern))
+
+    results = query.all()
+
+    total_energy = 0.0; energy_equipment = 0.0; energy_lights = 0.0
+    pmv_values = []; temperature_values = []; humidity_values = []
+    total_energy_transfer = 0.0; total_heating_transfer = 0.0; total_cooling_transfer = 0.0
     fans_electricity = 0.0
 
-    for doc in docs:
-        for row in doc.get("results", []):
-            datetime_str = row.get("Date/Time", "").strip()
-            # Filtre par date
-            if normalized_date and not datetime_str.startswith(normalized_date):
-                continue
-            # Filtre par heure
-            if hour:
-                time_parts = datetime_str.split("  ")
-                if len(time_parts) < 2 or not time_parts[1].startswith(f"{hour.zfill(2)}:"):
-                    continue
-            # Extraction des données en une seule passe
-            for key, value in row.items():
-                if key == "Date/Time":
-                    continue
-                key_lower = key.lower()
-                # Somme de l'énergie
-                if key.strip().lower().startswith("electricity:zone"):
-                    try:
-                        total_energy += float(value)
-                    except Exception:
-                        pass
-                # Somme de l'énergie transférée (EnergyTransfer:Zone)
-                if key.strip().lower().startswith("energytransfer:zone"):
-                    try:
-                        total_energy_transfer += float(value)
-                    except Exception:
-                        pass
-                # Somme du heating transfer
-                if key.strip().lower().startswith("heating:energytransfer:zone"):
-                    try:
-                        total_heating_transfer += float(value)
-                    except Exception:
-                        pass
-                # Somme du cooling transfer
-                if key.strip().lower().startswith("cooling:energytransfer:zone"):
-                    try:
-                        total_cooling_transfer += float(value)
-                    except Exception:
-                        pass
-                # Somme de la consommation des ventilateurs (Fans:Electricity)
-                if "fans:electricity" in key_lower:
-                    try:
-                        fans_electricity += float(value)
-                    except Exception:
-                        pass
-                # Consommation détaillée
-                if "interiorequipment" in key_lower:
-                    try:
-                        energy_equipment += float(value)
-                    except Exception:
-                        pass
-                if "interiorlights" in key_lower:
-                    try:
-                        energy_lights += float(value)
-                    except Exception:
-                        pass
-                # Liste des valeurs PMV
-                if "thermal comfort fanger model pmv" in key_lower:
-                    try:
-                        pmv_values.append(float(value))
-                    except Exception:
-                        pass
-                # Liste des valeurs de Température
-                if "zone thermostat air temperature" in key_lower:
-                    try:
-                        temperature_values.append(float(value))
-                    except Exception:
-                        pass
-                # Liste des valeurs d'Humidité
-                if "air relative humidity" in key_lower:
-                    try:
-                        humidity_values.append(float(value))
-                    except Exception:
-                        pass
-
-    final_temperature = temperature_values
-    if len(temperature_values) == 1:
-        final_temperature = temperature_values[0]
-    elif len(temperature_values) > 1:
-        final_temperature = float(np.mean(temperature_values))
-    elif len(temperature_values) == 0:
-        final_temperature = None
-
-    final_pmv = pmv_values
-    if len(pmv_values) == 1:
-        final_pmv = pmv_values[0]
-    elif len(pmv_values) > 1:
-        final_pmv = float(np.mean(pmv_values))
-    elif len(pmv_values) == 0:
-        final_pmv = None
-
-    final_humidity = humidity_values
-    if len(humidity_values) == 1:
-        final_humidity = humidity_values[0]
-    elif len(humidity_values) > 1:
-        final_humidity = float(np.mean(humidity_values))
-    elif len(humidity_values) == 0:
-        final_humidity = None
+    for key, value, _ in results:
+        key_lower = key.lower()
+        if key_lower.startswith("electricity"): total_energy += value
+        if key_lower.startswith("energytransfer"): total_energy_transfer += value
+        if key_lower.startswith("heating"): total_heating_transfer += value
+        if key_lower.startswith("cooling"): total_cooling_transfer += value
+        if "fans" in key_lower: fans_electricity += value
+        if "interiorequipment" in key_lower: energy_equipment += value
+        if "interiorlights" in key_lower: energy_lights += value
+        if "pmv" in key_lower: pmv_values.append(value)
+        if "thermostat" in key_lower: temperature_values.append(value)
+        if "humidity" in key_lower: humidity_values.append(value)
+    
+    def calculate_final_value(values):
+        if not values: return None
+        return np.mean(values)
 
     return {
-        "simulation_name": sim_name,
-        "room": room if room else "ALL",
-        "date": date,
-        "hour": hour,
-        #TOTAL_GLOBAL = total energy(light+equipment) + total energy transfer(cooling+heating) + fans
+        "simulation_name": sim_name, "room": room if room else "ALL", "date": date, "hour": hour,
         "data": {
-
             "total_energy_kwh": total_energy / 3600000,
-            "detailed_energy_kwh": {
-                "equipment": energy_equipment / 3600000,
-                "lights": energy_lights / 3600000
-            },
-
+            "detailed_energy_kwh": { "equipment": energy_equipment / 3600000, "lights": energy_lights / 3600000 },
             "total_energy_transfer_kwh": total_energy_transfer / 3600000,
             "detailed_energy_transfer": {
                 "total_heating_transfer_kwh": total_heating_transfer / 3600000,
                 "total_cooling_transfer_kwh": total_cooling_transfer / 3600000,
             },
-
             "fans_electricity_kwh": fans_electricity / 3600000,
-
             "total_energy_consommation": (total_energy + total_energy_transfer + fans_electricity) / 3600000,
-
-
-            "pmv_values": final_pmv,
-            "temperature_values": final_temperature,
-            "humidity_values": final_humidity,
-            
+            "pmv_values": calculate_final_value(pmv_values),
+            "temperature_values": calculate_final_value(temperature_values),
+            "humidity_values": calculate_final_value(humidity_values),
         },
     }
 
 @app.get("/get_idf_objects/{file_id}")
-def get_idf_objects(file_id: str):
-    """
-    Parse un fichier IDF et retourne sa structure en JSON.
-    Utilise eppy pour une analyse robuste.
-    """
-    try:
-        file_doc = input_files.find_one({"_id": ObjectId(file_id)})
-    except Exception:
-        raise HTTPException(status_code=400, detail="ID de fichier invalide")
+def get_idf_objects(file_id: int, db: Session = Depends(get_db)):
+    file_doc = db.query(InputFile).filter(InputFile.id == file_id).first()
     if not file_doc:
         raise HTTPException(status_code=404, detail="Fichier non trouvé")
 
-    # Utiliser un fichier temporaire pour eppy
     tmp_path = ""
     try:
         with tempfile.NamedTemporaryFile(mode='w+', delete=False, suffix=".idf", encoding='utf-8') as tmp:
-            if "content_b64" in file_doc:
-                content = base64.b64decode(file_doc["content_b64"]).decode('utf-8')
-            elif "content" in file_doc:
-                content = file_doc["content"]
-            else:
-                raise HTTPException(status_code=404, detail="Contenu du fichier introuvable")
+            content = base64.b64decode(file_doc.content_b64).decode('utf-8')
             tmp.write(content)
             tmp_path = tmp.name
 
@@ -784,8 +637,7 @@ def get_idf_objects(file_id: str):
         structured_idf = {}
         for obj_type in idf.idfobjects:
             obj_type_upper = obj_type.upper()
-            if not idf.idfobjects[obj_type]:
-                continue
+            if not idf.idfobjects[obj_type]: continue
             
             structured_idf[obj_type_upper] = []
             for instance in idf.idfobjects[obj_type]:
@@ -806,22 +658,15 @@ class IDFFieldUpdate(BaseModel):
     new_value: str
 
 @app.post("/update_idf_field/{file_id}")
-def update_idf_field(file_id: str, update_data: IDFFieldUpdate):
-    """Met à jour un champ spécifique dans un fichier IDF et retourne le nouveau contenu."""
-    try:
-        file_doc = input_files.find_one({"_id": ObjectId(file_id)})
-    except Exception:
-        raise HTTPException(status_code=400, detail="ID de fichier invalide")
+def update_idf_field(file_id: int, update_data: IDFFieldUpdate, db: Session = Depends(get_db)):
+    file_doc = db.query(InputFile).filter(InputFile.id == file_id).first()
     if not file_doc:
         raise HTTPException(status_code=404, detail="Fichier non trouvé")
 
     tmp_path = ""
     try:
         with tempfile.NamedTemporaryFile(mode='w+', delete=False, suffix=".idf", encoding='utf-8') as tmp:
-            if "content_b64" in file_doc:
-                content = base64.b64decode(file_doc["content_b64"]).decode('utf-8')
-            else:
-                content = file_doc["content"]
+            content = base64.b64decode(file_doc.content_b64).decode('utf-8')
             tmp.write(content)
             tmp_path = tmp.name
 
@@ -829,30 +674,20 @@ def update_idf_field(file_id: str, update_data: IDFFieldUpdate):
         IDF.setiddname(iddfile)
         idf = IDF(tmp_path)
         
-        # Accéder à l'objet et mettre à jour le champ
         objects_of_type = idf.idfobjects.get(update_data.object_type.upper())
         if not objects_of_type or update_data.object_index >= len(objects_of_type):
-            raise HTTPException(status_code=404, detail="Objet IDF non trouvé (type ou index invalide)")
+            raise HTTPException(status_code=404, detail="Objet IDF non trouvé")
 
         target_object = objects_of_type[update_data.object_index]
-        
-        if not target_object:
-            raise HTTPException(status_code=404, detail="Objet IDF non trouvé")
-        
         setattr(target_object, update_data.field_name, update_data.new_value)
-        
-        idf.save() # Sauvegarde les modifications dans le fichier temporaire
+        idf.save()
 
-        # Lire le nouveau contenu
         with open(tmp_path, "r", encoding='utf-8') as f:
             new_content = f.read()
 
-        # Mettre à jour dans MongoDB et retourner
         new_content_b64 = base64.b64encode(new_content.encode('utf-8')).decode('ascii')
-        input_files.update_one(
-            {"_id": ObjectId(file_id)},
-            {"$set": {"content_b64": new_content_b64}}
-        )
+        file_doc.content_b64 = new_content_b64
+        db.commit()
 
         return {"status": "success", "new_content": new_content}
     except Exception as e:
