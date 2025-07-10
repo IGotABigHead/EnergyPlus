@@ -1,5 +1,6 @@
 from fastapi import FastAPI, HTTPException, Query, Body, UploadFile, File, Depends
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from sqlalchemy import create_engine, Column, Integer, String, DateTime, Float, ForeignKey, Text, func
 from sqlalchemy.orm import sessionmaker, relationship, Session, declarative_base
 from datetime import datetime
@@ -16,7 +17,6 @@ from pydantic import BaseModel
 import numpy as np
 from sqlalchemy.dialects.mysql import LONGTEXT
 
-# Ajouter le chemin vers eppy
 pathnameto_eppy = 'C:\\Users\\Cesi\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\site-packages\\eppy'
 sys.path.append(pathnameto_eppy)
 
@@ -67,6 +67,32 @@ class Result(Base):
 
 # Création des tables dans la base de données
 Base.metadata.create_all(bind=engine)
+
+# --- Remplissage automatique de la table zones si vide ---
+def fill_zones_if_needed():
+    from sqlalchemy.exc import OperationalError
+    zones_to_insert = [
+        "BUREAUETAGE",
+        "HALLRDC",
+        "LOCALSERVEURS",
+        "LOCALTECH",
+        "LUMIERE",
+        "NOBEL",
+        "TESLA",
+        "TURING"
+    ]
+    db = SessionLocal()
+    try:
+        for zone_name in zones_to_insert:
+            if not db.query(Zone).filter(Zone.name == zone_name).first():
+                db.add(Zone(name=zone_name))
+        db.commit()
+    except OperationalError:
+        pass
+    finally:
+        db.close()
+
+fill_zones_if_needed()
 
 app = FastAPI()
 app.add_middleware(
@@ -175,13 +201,23 @@ def save_new_version(file_id: int, content: str = Body(...), filename: Optional[
 async def upload_input_file(file: UploadFile = File(...), file_type: str = Query(...), db: Session = Depends(get_db)):
     content_bytes = await file.read()
     content_b64 = base64.b64encode(content_bytes).decode('ascii')
-    
+
+    # Chercher la dernière version existante pour ce nom de fichier et type
+    last_file = db.query(InputFile).filter(InputFile.filename == file.filename, InputFile.file_type == file_type).order_by(InputFile.version.desc()).first()
+    if last_file:
+        version = last_file.version + 1
+        previous_version_id = last_file.id
+    else:
+        version = 1
+        previous_version_id = None
+
     new_file = InputFile(
         file_type=file_type,
         filename=file.filename,
         content_b64=content_b64,
         upload_date=datetime.now(),
-        version=1
+        version=version,
+        previous_version_id=previous_version_id
     )
     db.add(new_file)
     db.commit()
@@ -190,6 +226,8 @@ async def upload_input_file(file: UploadFile = File(...), file_type: str = Query
 
 @app.post("/run_simulation/")
 def run_simulation(idf_file_id: int = Body(...), epw_file_id: int = Body(...), db: Session = Depends(get_db)):
+    import time
+    start_time = time.time()
     idf_doc = db.query(InputFile).filter(InputFile.id == idf_file_id).first()
     epw_doc = db.query(InputFile).filter(InputFile.id == epw_file_id).first()
     if not idf_doc or not epw_doc:
@@ -227,6 +265,7 @@ def run_simulation(idf_file_id: int = Body(...), epw_file_id: int = Body(...), d
             idf.run(**options)
             
             csv_dir = os.path.dirname(fname)
+            print(f"Contenu du dossier temporaire après simulation : {os.listdir(csv_dir)}")
             csv_files = [f for f in os.listdir(csv_dir) if f.endswith('.csv')]
             if csv_files:
                 csv_output_path = os.path.join(csv_dir, csv_files[0])
@@ -236,10 +275,21 @@ def run_simulation(idf_file_id: int = Body(...), epw_file_id: int = Body(...), d
                 existing_sim_count = db.query(Simulation).filter(Simulation.simulation_name.like(f"{base_name}_%")).count()
                 simulation_name = f"{base_name}_{existing_sim_count + 1}"
                 
-                res_dir = r"C:\Users\Cesi\Desktop\IR_THEO_BOSSET\Git\res"
+                res_dir = r"C:\\Users\\Cesi\\Desktop\\IR_THEO_BOSSET\\Git\\res"
                 os.makedirs(res_dir, exist_ok=True)
+                # Copie du CSV déjà existante
                 dest_csv_path = os.path.join(res_dir, f"{simulation_name}.csv")
                 shutil.copy2(csv_output_path, dest_csv_path)
+
+                # Copie du HTML de résultats (Table.htm ou Table.html, insensible à la casse)
+                html_files = [f for f in os.listdir(csv_dir) if f.lower().endswith('table.htm') or f.lower().endswith('table.html')]
+                if html_files:
+                    html_output_path = os.path.join(csv_dir, html_files[0])
+                    dest_html_path = os.path.join(res_dir, f"{simulation_name}Table.htm")
+                    shutil.copy2(html_output_path, dest_html_path)
+                    print(f"Fichier HTML copié : {dest_html_path}")
+                else:
+                    print(f"Aucun fichier HTML *Table.htm(l) trouvé dans {csv_dir}")
 
                 df = pd.read_csv(csv_output_path)
                 
@@ -256,13 +306,16 @@ def run_simulation(idf_file_id: int = Body(...), epw_file_id: int = Body(...), d
 
                 store_results_by_zone(df, new_sim.id, db)
 
+                elapsed_time = time.time() - start_time
+                print(f"Simulation '{simulation_name}' terminée avec succès. Temps d'exécution: {elapsed_time:.2f} secondes")
                 return {
                     "status": "success",
                     "simulation_name": simulation_name,
                     "message": f"Simulation '{simulation_name}' terminée. CSV copié dans {dest_csv_path}",
                     "results_count": len(df),
-                    "stdout": f"Simulation '{simulation_name}' terminée avec succès.",
-                    "stderr": ""
+                    "stdout": f"Simulation '{simulation_name}' terminée avec succès. (rafraichir la page pour voir les résultats)",
+                    "stderr": "",
+                    "elapsed_time_seconds": elapsed_time
                 }
             else:
                 return {"status": "error", "message": "Aucun fichier CSV de résultat trouvé."}
@@ -529,6 +582,7 @@ def store_results_by_zone(df: pd.DataFrame, simulation_id: int, db: Session):
                 value=value
             )
             db.add(result)
+
     db.commit()
 
 def build_like_pattern(date, hour):
@@ -695,6 +749,44 @@ def update_idf_field(file_id: int, update_data: IDFFieldUpdate, db: Session = De
     finally:
         if tmp_path and os.path.exists(tmp_path):
             os.unlink(tmp_path)
+
+@app.get("/simulations")
+def list_simulations(db: Session = Depends(get_db)):
+    sims = db.query(Simulation).order_by(Simulation.timestamp.desc()).all()
+    return {"simulations": [s.simulation_name for s in sims]}
+
+@app.get("/results/by_simulation/{simulation_name}")
+def list_results_files(simulation_name: str):
+    """
+    Liste les fichiers de résultats (CSV, HTML) disponibles pour une simulation donnée.
+    """
+    res_dir = r"C:\\Users\\Cesi\\Desktop\\IR_THEO_BOSSET\\Git\\res"
+    base = simulation_name
+    files = []
+    for ext in [".csv", ".html"]:  # On cherche CSV et HTML
+        path = os.path.join(res_dir, f"{base}{ext}")
+        if os.path.exists(path):
+            files.append({
+                "filename": f"{base}{ext}",
+                "type": ext[1:],
+                "url": f"/results/download/{base}{ext}"
+            })
+    return {"files": files}
+
+@app.get("/results/download/{filename}")
+def download_result_file(filename: str):
+    """
+    Sert un fichier de résultat (CSV ou HTML) depuis le dossier res/.
+    """
+    res_dir = r"C:\\Users\\Cesi\\Desktop\\IR_THEO_BOSSET\\Git\\res"
+    path = os.path.join(res_dir, filename)
+    if not os.path.exists(path):
+        raise HTTPException(status_code=404, detail="Fichier non trouvé")
+    # Pour HTML, afficher dans le navigateur ; pour CSV, forcer le téléchargement
+    if filename.lower().endswith('.html'):
+        return FileResponse(path, media_type='text/html', filename=filename)
+    else:
+        return FileResponse(path, media_type='text/csv', filename=filename)
 
 if __name__ == "__main__":
     import uvicorn

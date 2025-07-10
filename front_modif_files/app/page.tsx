@@ -39,6 +39,7 @@ export default function Home() {
   const [selectedEpwId, setSelectedEpwId] = useState<string>('')
   const [idfFilename, setIdfFilename] = useState<string>('')
   const [epwFilename, setEpwFilename] = useState<string>('')
+  const [resultFiles, setResultFiles] = useState<{filename: string, type: string, url: string}[]>([])
 
   // Fetch simulations and input files on mount
   useEffect(() => {
@@ -108,9 +109,21 @@ export default function Home() {
     }
   }
 
+  // Récupère les fichiers de résultats pour la simulation sélectionnée
+  const fetchResultFiles = async (simulationName: string) => {
+    try {
+      const response = await axios.get(`${API_BASE_URL}/results/by_simulation/${simulationName}`)
+      setResultFiles(response.data.files)
+    } catch (error) {
+      setResultFiles([])
+    }
+  }
+
+  // Modifie handleSimulationSelect pour charger aussi les fichiers de résultats
   const handleSimulationSelect = (simulationName: string) => {
     setSelectedSimulation(simulationName)
     fetchInputFiles(simulationName)
+    fetchResultFiles(simulationName)
   }
 
   const handleSave = async () => {
@@ -360,6 +373,32 @@ export default function Home() {
                 onSelect={handleSimulationSelect}
                 isLoading={isLoading}
               />
+              {/* Affichage des fichiers de résultats */}
+              {selectedSimulation && (
+                <div className="mt-6">
+                  <h3 className="text-md font-medium mb-2">Fichiers de résultats</h3>
+                  {resultFiles.length === 0 ? (
+                    <div className="text-gray-400 text-sm">Aucun fichier de résultat disponible.</div>
+                  ) : (
+                    <ul className="space-y-2">
+                      {resultFiles.map(f => (
+                        <li key={f.filename} className="flex items-center space-x-2">
+                          <span className="font-mono text-xs">{f.filename}</span>
+                          <a
+                            href={`http://localhost:8000${f.url}`}
+                            target={f.type === 'html' ? '_blank' : '_self'}
+                            rel="noopener noreferrer"
+                            className="text-blue-600 hover:underline text-xs border px-2 py-1 rounded"
+                            download={f.type === 'csv'}
+                          >
+                            {f.type === 'html' ? 'Voir HTML' : 'Télécharger CSV'}
+                          </a>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              )}
             </div>
           </div>
 

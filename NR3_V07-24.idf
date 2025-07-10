@@ -19121,7 +19121,8 @@ Output:Table:SummaryReports,
     ComfortReportSimple55Monthly,  !- Report 3 Name
     OccupantComfortDataSummaryMonthly,  !- Report 4 Name
     AnnualBuildingUtilityPerformanceSummary,  !- Report 5 Name
-    ZoneTemperatureOscillationReportMonthly;  !- Report 6 Name
+    ZoneTemperatureOscillationReportMonthly,  !- Report 6 Name
+    AllSummary;              !- Report 7 Name
 
 
 !-   ===========  ALL OBJECTS IN CLASS: OUTPUT:TABLE:MONTHLY ===========
@@ -19322,6 +19323,130 @@ Output:Meter,
 
 Output:Meter,
     InteriorLights:Electricity:Zone:ETAGE:BUREAUETAGE ,  !- Key Name
+    Hourly;                  !- Reporting Frequency
+
+Output:Meter,
+    EnergyTransfer:Zone:RDC:TESLA ,  !- Key Name
+    Hourly;                  !- Reporting Frequency
+
+Output:Meter,
+    Cooling:EnergyTransfer:Zone:RDC:TESLA ,  !- Key Name
+    Hourly;                  !- Reporting Frequency
+
+Output:Meter,
+    Heating:EnergyTransfer:Zone:RDC:TESLA ,  !- Key Name
+    Hourly;                  !- Reporting Frequency
+
+Output:Meter,
+    RDC:TESLA:Fans:Electricity ,  !- Key Name
+    Hourly;                  !- Reporting Frequency
+
+Output:Meter,
+    Cooling:EnergyTransfer:Zone:ETAGE:BUREAUETAGE ,  !- Key Name
+    Hourly;                  !- Reporting Frequency
+
+Output:Meter,
+    EnergyTransfer:Zone:ETAGE:BUREAUETAGE ,  !- Key Name
+    Hourly;                  !- Reporting Frequency
+
+Output:Meter,
+    Heating:EnergyTransfer:Zone:ETAGE:BUREAUETAGE ,  !- Key Name
+    Hourly;                  !- Reporting Frequency
+
+Output:Meter,
+    Etage:BUREAUETAGE:Fans:Electricity ,  !- Key Name
+    Hourly;                  !- Reporting Frequency
+
+Output:Meter,
+    Cooling:EnergyTransfer:Zone:ETAGE:LOCALSERVEURS ,  !- Key Name
+    Hourly;                  !- Reporting Frequency
+
+Output:Meter,
+    Cooling:EnergyTransfer:Zone:ETAGE:NOBEL ,  !- Key Name
+    Hourly;                  !- Reporting Frequency
+
+Output:Meter,
+    Cooling:EnergyTransfer:Zone:ETAGE:TURING ,  !- Key Name
+    Hourly;                  !- Reporting Frequency
+
+Output:Meter,
+    Cooling:EnergyTransfer:Zone:RDC:HALLRDC ,  !- Key Name
+    Hourly;                  !- Reporting Frequency
+
+Output:Meter,
+    Cooling:EnergyTransfer:Zone:RDC:LOCALTECH ,  !- Key Name
+    Hourly;                  !- Reporting Frequency
+
+Output:Meter,
+    Cooling:EnergyTransfer:Zone:RDC:LUMIERE ,  !- Key Name
+    Hourly;                  !- Reporting Frequency
+
+Output:Meter,
+    EnergyTransfer:Zone:ETAGE:LOCALSERVEURS ,  !- Key Name
+    Hourly;                  !- Reporting Frequency
+
+Output:Meter,
+    EnergyTransfer:Zone:ETAGE:NOBEL ,  !- Key Name
+    Hourly;                  !- Reporting Frequency
+
+Output:Meter,
+    EnergyTransfer:Zone:ETAGE:TURING ,  !- Key Name
+    Hourly;                  !- Reporting Frequency
+
+Output:Meter,
+    EnergyTransfer:Zone:RDC:HALLRDC ,  !- Key Name
+    Hourly;                  !- Reporting Frequency
+
+Output:Meter,
+    EnergyTransfer:Zone:RDC:LOCALTECH ,  !- Key Name
+    Hourly;                  !- Reporting Frequency
+
+Output:Meter,
+    EnergyTransfer:Zone:RDC:LUMIERE ,  !- Key Name
+    Hourly;                  !- Reporting Frequency
+
+Output:Meter,
+    Heating:EnergyTransfer:Zone:ETAGE:LOCALSERVEURS ,  !- Key Name
+    Hourly;                  !- Reporting Frequency
+
+Output:Meter,
+    Heating:EnergyTransfer:Zone:ETAGE:NOBEL ,  !- Key Name
+    Hourly;                  !- Reporting Frequency
+
+Output:Meter,
+    Heating:EnergyTransfer:Zone:ETAGE:TURING ,  !- Key Name
+    Hourly;                  !- Reporting Frequency
+
+Output:Meter,
+    Heating:EnergyTransfer:Zone:RDC:HALLRDC ,  !- Key Name
+    Hourly;                  !- Reporting Frequency
+
+Output:Meter,
+    Heating:EnergyTransfer:Zone:RDC:LOCALTECH ,  !- Key Name
+    Hourly;                  !- Reporting Frequency
+
+Output:Meter,
+    Heating:EnergyTransfer:Zone:RDC:LUMIERE ,  !- Key Name
+    Hourly;                  !- Reporting Frequency
+
+Output:Meter,
+    Etage:LOCALSERVEURS:Fans:Electricity ,  !- Key Name
+    Hourly;                  !- Reporting Frequency
+
+Output:Meter,
+    Etage:NOBEL:Fans:Electricity ,  !- Key Name
+    Hourly;                  !- Reporting Frequency
+
+Output:Meter,
+    Etage:TURING:Fans:Electricity ,  !- Key Name
+    Hourly;                  !- Reporting Frequency
+
+Output:Meter,
+    RDC:LOCALTECH:Fans:Electricity ,  !- Key Name
+    Hourly;                  !- Reporting Frequency
+
+Output:Meter,
+    RDC:LUMIERE:Fans:Electricity ,  !- Key Name
     Hourly;                  !- Reporting Frequency
 
 
