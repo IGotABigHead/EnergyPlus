@@ -1,252 +1,213 @@
-# Documentation de l'API EnergyPlus
+# Documentation API EnergyPlus (détails des paramètres)
 
-Cette API permet de gérer des fichiers d'entrée (IDF, EPW), de lancer des simulations EnergyPlus, et d'accéder aux résultats (énergie, température, PMV, etc.) par zone, poste, date, etc.
-
----
-
-## Table des matières
-- [Fichiers d'entrée](#fichiers-dentrée)
-- [Simulation](#simulation)
-- [Résultats et requêtes analytiques](#résultats-et-requêtes-analytiques)
-- [Objets IDF](#objets-idf)
-- [Divers](#divers)
+Cette API permet de gérer les fichiers d’entrée (IDF, EPW), lancer des simulations et consulter les résultats énergétiques, thermiques, etc.
 
 ---
 
-## Fichiers d'entrée
+## Gestion des fichiers d’entrée
 
-### `GET /input_file/by_id/{file_id}`
-Récupère un fichier d'entrée par son ID.
+### 1. Récupérer un fichier par ID  
+`GET /input_file/by_id/{file_id}`
 
-**Réponse :**
-```json
-{
-  "_id": "1",
-  "file_type": "idf",
-  "filename": "NR3_V07-24.idf",
-  "content": "...contenu du fichier..."
-}
-```
+- **Paramètres URL :**  
+  - `file_id` (int, **requis**) : Identifiant du fichier.
 
-### `GET /input_file/by_simulation/{simulation_name}`
-Récupère les fichiers d'entrée (idf, epw) associés à une simulation.
+**Réponse :** Contenu complet du fichier.
 
-**Réponse :**
-```json
-{
-  "idf": { ... },
-  "epw": { ... }
-}
-```
+---
 
-### `POST /input_file/update/{file_id}`
-Met à jour le contenu d'un fichier d'entrée (base64).
+### 2. Récupérer les fichiers liés à une simulation  
+`GET /input_file/by_simulation/{simulation_name}`
 
-**Body :**
-- `content` (str, requis)
+- **Paramètres URL :**  
+  - `simulation_name` (string, **requis**) : Nom de la simulation.
 
-**Réponse :** `{ "status": "ok" }`
+**Réponse :** Les fichiers `idf` et `epw` associés.
 
-### `GET /input_files/?file_type=...`
-Liste les fichiers d'entrée d'un type donné (`idf` ou `epw`).
+---
 
-**Réponse :**
-```json
-[
-  { "_id": "1", "filename": "...", "upload_date": "...", "version": 1 },
-  ...
-]
-```
+### 3. Mettre à jour un fichier (contenu base64)  
+`POST /input_file/update/{file_id}`
 
-### `POST /input_file/save_new_version/{file_id}`
-Crée une nouvelle version d'un fichier d'entrée.
+- **Paramètres URL :**  
+  - `file_id` (int, **requis**)
 
-**Body :**
-- `content` (str, requis)
-- `filename` (str, optionnel)
+- **Body JSON :**  
+  - `content` (string, **requis**) : Contenu du fichier encodé en base64.
 
-**Réponse :** `{ "status": "ok", "new_id": "..." }`
+---
 
-### `POST /input_file/upload/?file_type=...`
-Upload d'un fichier d'entrée (multipart/form-data).
+### 4. Lister les fichiers d’un type  
+`GET /input_files/`
 
-**Réponse :** `{ "status": "ok", "new_id": "..." }`
+- **Query params :**  
+  - `file_type` (string, **optionnel**) : Type de fichier, soit `"idf"` soit `"epw"`.
+
+---
+
+### 5. Créer une nouvelle version d’un fichier  
+`POST /input_file/save_new_version/{file_id}`
+
+- **Paramètres URL :**  
+  - `file_id` (int, **requis**)
+
+- **Body JSON :**  
+  - `content` (string, **requis**) : Nouveau contenu base64.  
+  - `filename` (string, **optionnel**) : Nom du fichier.
+
+---
+
+### 6. Upload d’un nouveau fichier  
+`POST /input_file/upload/`
+
+- **Query params :**  
+  - `file_type` (string, **requis**) : `"idf"` ou `"epw"`.
+
+- **Body :**  
+  - Multipart/form-data avec fichier à uploader.
 
 ---
 
 ## Simulation
 
-### `POST /run_simulation/`
-Lance une simulation EnergyPlus à partir de fichiers IDF et EPW.
+### 7. Lancer une simulation EnergyPlus  
+`POST /run_simulation/`
 
-**Body :**
-- `idf_file_id` (int, requis)
-- `epw_file_id` (int, requis)
-
-**Réponse :**
-```json
-{
-  "status": "success",
-  "simulation_name": "NR3_V07-24_1",
-  "message": "Simulation ... terminée. CSV copié dans ...",
-  "results_count": 8760,
-  "stdout": "...",
-  "stderr": "",
-  "elapsed_time_seconds": 12.34
-}
-```
+- **Body JSON :**  
+  - `idf_file_id` (int, **requis**) : ID du fichier IDF.  
+  - `epw_file_id` (int, **requis**) : ID du fichier EPW.
 
 ---
 
-## Résultats et requêtes analytiques
+## Consultation des résultats
 
-### `GET /zones/`
-Liste les zones connues.
+Tous ces endpoints acceptent en query params optionnels pour filtrer :
 
-**Réponse :**
-```json
-[
-  { "id": 1, "name": "BUREAUETAGE" }, ...
-]
-```
-
-### `GET /sum_all_energy/`
-Somme de l'énergie totale (toutes zones, tout poste).
-
-**Query params :**
-- `simulation_name` (str, optionnel)
-- `date` (str, optionnel, format M/D ou MM/DD)
-- `hour` (str, optionnel, format H ou HH)
-
-**Réponse :**
-```json
-{
-  "simulation_name": "...",
-  "date": "...",
-  "hour": "...",
-  "total_energy_all_fields": 123456.0,
-  "total_energy_all_fields_kwh": 34.29
-}
-```
-
-### `GET /sum_room_energy/`
-Somme de l'énergie pour une zone donnée.
-
-**Query params :**
-- `room` (str, requis)
-- autres : voir ci-dessus
-
-**Réponse :**
-```json
-{
-  "simulation_name": "...",
-  "room": "NOBEL",
-  "total_energy_room": 12345.0,
-  "total_energy_room_kwh": 3.43
-}
-```
-
-### `GET /sum_by_poste/`
-Somme de l'énergie pour un poste donné (ex: Heating, Cooling, Electricity, etc.).
-
-**Query params :**
-- `poste` (str, requis)
-- autres : voir ci-dessus
-
-### `GET /sum_by_room_and_poste/`
-Somme de l'énergie pour une zone et un poste donnés.
-
-**Query params :**
-- `room` (str, requis)
-- `poste` (str, requis)
-- autres : voir ci-dessus
-
-### `GET /pmv_by_room/`
-Liste des valeurs PMV pour une zone.
-
-**Query params :**
-- `room` (str, requis)
-- autres : voir ci-dessus
-
-### `GET /temperature_by_room/`
-Liste des températures pour une zone.
-
-**Query params :**
-- `room` (str, requis)
-- autres : voir ci-dessus
-
-### `GET /room_summary/`
-Résumé agrégé pour une zone (ou toutes zones).
-
-**Query params :**
-- `room` (str, optionnel)
-- autres : voir ci-dessus
-
-**Réponse :**
-```json
-{
-  "simulation_name": "...",
-  "room": "NOBEL",
-  "data": {
-    "total_energy_kwh": 12.3,
-    "detailed_energy_kwh": { "equipment": 1.2, "lights": 0.8 },
-    "total_energy_transfer_kwh": 2.1,
-    "detailed_energy_transfer": { "total_heating_transfer_kwh": 1.1, "total_cooling_transfer_kwh": 1.0 },
-    "fans_electricity_kwh": 0.5,
-    "total_energy_consommation": 14.9,
-    "pmv_values": 0.2,
-    "temperature_values": 22.5,
-    "humidity_values": 45.0
-  }
-}
-```
+- `simulation_name` (string, optionnel) : Nom de la simulation.  
+- `date` (string, optionnel) : Date au format `M/D` ou `MM/DD` (ex : `10/25`).  
+- `hour` (string, optionnel) : Heure au format `H` ou `HH` (ex : `14`).
 
 ---
 
-## Objets IDF
+### 8. Lister les zones  
+`GET /zones/`
 
-### `GET /get_idf_objects/{file_id}`
-Retourne la structure des objets IDF d'un fichier.
+- Pas de paramètres.
 
-**Réponse :**
-```json
-{
-  "ZONE": [ { "fields": { ... } }, ... ],
-  ...
-}
-```
+---
 
-### `POST /update_idf_field/{file_id}`
-Met à jour un champ d'un objet IDF.
+### 9. Somme de l’énergie totale (toutes zones, postes)  
+`GET /sum_all_energy/`
 
-**Body :**
-```json
-{
-  "object_type": "ZONE",
-  "object_index": 0,
-  "field_name": "Name",
-  "new_value": "NOUVEAU_NOM"
-}
-```
+- **Query params (optionnels) :**  
+  - `simulation_name` (string)  
+  - `date` (string)  
+  - `hour` (string)
 
-**Réponse :** `{ "status": "success", "new_content": "..." }`
+---
+
+### 10. Somme d’énergie pour une zone  
+`GET /sum_room_energy/`
+
+- **Query params :**  
+  - `room` (string, **requis**) : Nom de la zone.  
+  - `simulation_name` (string, optionnel)  
+  - `date` (string, optionnel)  
+  - `hour` (string, optionnel)
+
+---
+
+### 11. Somme d’énergie par poste  
+`GET /sum_by_poste/`
+
+- **Query params :**  
+  - `poste` (string, **requis**) : Ex : `"Heating"`, `"Cooling"`, `"Electricity"`.  
+  - `simulation_name` (string, optionnel)  
+  - `date` (string, optionnel)  
+  - `hour` (string, optionnel)
+
+---
+
+### 12. Somme d’énergie par zone et poste  
+`GET /sum_by_room_and_poste/`
+
+- **Query params :**  
+  - `room` (string, **requis**)  
+  - `poste` (string, **requis**)  
+  - `simulation_name` (string, optionnel)  
+  - `date` (string, optionnel)  
+  - `hour` (string, optionnel)
+
+---
+
+### 13. Valeurs PMV pour une zone  
+`GET /pmv_by_room/`
+
+- **Query params :**  
+  - `room` (string, **requis**)  
+  - `simulation_name` (string, optionnel)  
+  - `date` (string, optionnel)  
+  - `hour` (string, optionnel)
+
+---
+
+### 14. Températures pour une zone  
+`GET /temperature_by_room/`
+
+- **Query params :**  
+  - `room` (string, **requis**)  
+  - `simulation_name` (string, optionnel)  
+  - `date` (string, optionnel)  
+  - `hour` (string, optionnel)
+
+---
+
+### 15. Résumé énergétique d’une zone (ou toutes zones)  
+`GET /room_summary/`
+
+- **Query params :**  
+  - `room` (string, **optionnel**)  
+  - `simulation_name` (string, optionnel)  
+  - `date` (string, optionnel)  
+  - `hour` (string, optionnel)
+
+---
+
+## Gestion des objets IDF
+
+### 16. Récupérer les objets IDF d’un fichier  
+`GET /get_idf_objects/{file_id}`
+
+- **Paramètres URL :**  
+  - `file_id` (int, **requis**)
+
+---
+
+### 17. Modifier un champ d’un objet IDF  
+`POST /update_idf_field/{file_id}`
+
+- **Paramètres URL :**  
+  - `file_id` (int, **requis**)
+
+- **Body JSON :**  
+  - `object_type` (string, **requis**) : Type d’objet IDF, ex : `"ZONE"`.  
+  - `object_index` (int, **requis**) : Index de l’objet dans la liste.  
+  - `field_name` (string, **requis**) : Nom du champ à modifier.  
+  - `new_value` (string, **requis**) : Nouvelle valeur du champ.
 
 ---
 
 ## Divers
 
-### `GET /simulations`
-Liste les simulations existantes (par nom).
+### 18. Lister les simulations existantes  
+`GET /simulations`
 
-**Réponse :**
-```json
-{ "simulations": [ "NR3_V07-24_1", ... ] }
-```
+- Pas de paramètres.
 
 ---
 
 ## Notes
-- Tous les endpoints peuvent retourner des erreurs HTTP 404 ou 500 en cas de problème.
-- Les paramètres de date/heure sont optionnels et permettent de filtrer les résultats.
-- Les unités d'énergie sont en Joules, sauf indication contraire (kWh calculé).
-- Pour plus de détails, voir le code source `api_server.py`. 
+
+- Les paramètres optionnels `date` et `hour` permettent de filtrer les résultats.  
+- L’énergie est renvoyée en Joules, sauf indication explicite en kWh.  
+- En cas d’erreur, les réponses HTTP peuvent être 404 (non trouvé) ou 500 (erreur serveur).

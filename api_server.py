@@ -1,6 +1,6 @@
 from fastapi import FastAPI, HTTPException, Query, Body, UploadFile, File, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy import create_engine, Column, Integer, String, DateTime, Float, ForeignKey, Text, func
 from sqlalchemy.orm import sessionmaker, relationship, Session, declarative_base
 from datetime import datetime
@@ -16,6 +16,7 @@ import re
 from pydantic import BaseModel
 import numpy as np
 from sqlalchemy.dialects.mysql import LONGTEXT
+import io
 
 pathnameto_eppy = 'C:\\Users\\Cesi\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\site-packages\\eppy'
 sys.path.append(pathnameto_eppy)
@@ -64,6 +65,15 @@ class Result(Base):
     datetime = Column(String(100))
     variable = Column(String(100))
     value = Column(Float)
+
+class ResultFile(Base):
+    __tablename__ = "result_files"
+    id = Column(Integer, primary_key=True, index=True)
+    simulation_name = Column(String(100), index=True)
+    file_type = Column(String(10))  # 'csv' ou 'html'
+    filename = Column(String(255))
+    content_b64 = Column(LONGTEXT)
+    upload_date = Column(DateTime, default=datetime.now)
 
 # Création des tables dans la base de données
 Base.metadata.create_all(bind=engine)
@@ -280,6 +290,7 @@ def run_simulation(idf_file_id: int = Body(...), epw_file_id: int = Body(...), d
                 # Copie du CSV déjà existante
                 dest_csv_path = os.path.join(res_dir, f"{simulation_name}.csv")
                 shutil.copy2(csv_output_path, dest_csv_path)
+                save_result_file_to_db(simulation_name, 'csv', f"{simulation_name}.csv", dest_csv_path, db)
 
                 # Copie du HTML de résultats (Table.htm ou Table.html, insensible à la casse)
                 html_files = [f for f in os.listdir(csv_dir) if f.lower().endswith('table.htm') or f.lower().endswith('table.html')]
@@ -288,6 +299,7 @@ def run_simulation(idf_file_id: int = Body(...), epw_file_id: int = Body(...), d
                     dest_html_path = os.path.join(res_dir, f"{simulation_name}Table.htm")
                     shutil.copy2(html_output_path, dest_html_path)
                     print(f"Fichier HTML copié : {dest_html_path}")
+                    save_result_file_to_db(simulation_name, 'html', f"{simulation_name}Table.htm", dest_html_path, db)
                 else:
                     print(f"Aucun fichier HTML *Table.htm(l) trouvé dans {csv_dir}")
 
@@ -758,20 +770,43 @@ def list_simulations(db: Session = Depends(get_db)):
 @app.get("/results/by_simulation/{simulation_name}")
 def list_results_files(simulation_name: str):
     """
-    Liste les fichiers de résultats (CSV, HTML) disponibles pour une simulation donnée.
+    Liste les fichiers de résultats (CSV, HTML/HTM) disponibles pour une simulation donnée.
     """
     res_dir = r"C:\\Users\\Cesi\\Desktop\\IR_THEO_BOSSET\\Git\\res"
     base = simulation_name
     files = []
-    for ext in [".csv", ".html"]:  # On cherche CSV et HTML
-        path = os.path.join(res_dir, f"{base}{ext}")
-        if os.path.exists(path):
+
+    # Cherche le CSV
+    csv_path = os.path.join(res_dir, f"{base}.csv")
+    if os.path.exists(csv_path):
+        files.append({
+            "filename": f"{base}.csv",
+            "type": "csv",
+            "url": f"/results/download/{base}.csv"
+        })
+
+    # Cherche tous les fichiers Table.htm(l)
+    for ext in ["Table.htm", "Table.html"]:
+        html_path = os.path.join(res_dir, f"{base}{ext}")
+        if os.path.exists(html_path):
             files.append({
                 "filename": f"{base}{ext}",
-                "type": ext[1:],
+                "type": "html",
                 "url": f"/results/download/{base}{ext}"
             })
     return {"files": files}
+
+@app.get("/results/by_simulation_db/{simulation_name}")
+def list_results_files_db(simulation_name: str, db: Session = Depends(get_db)):
+    files = db.query(ResultFile).filter(ResultFile.simulation_name == simulation_name).all()
+    return {"files": [
+        {
+            "id": f.id,
+            "filename": f.filename,
+            "type": f.file_type,
+            "url": f"/results/download_db/{f.id}"
+        } for f in files
+    ]}
 
 @app.get("/results/download/{filename}")
 def download_result_file(filename: str):
@@ -787,6 +822,28 @@ def download_result_file(filename: str):
         return FileResponse(path, media_type='text/html', filename=filename)
     else:
         return FileResponse(path, media_type='text/csv', filename=filename)
+
+@app.get("/results/download_db/{file_id}")
+def download_result_file_db(file_id: int, db: Session = Depends(get_db)):
+    result_file = db.query(ResultFile).filter(ResultFile.id == file_id).first()
+    if not result_file:
+        raise HTTPException(status_code=404, detail="Fichier non trouvé")
+    content = base64.b64decode(result_file.content_b64)
+    file_like = io.BytesIO(content)
+    media_type = "text/csv" if result_file.file_type == "csv" else "text/html"
+    return StreamingResponse(file_like, media_type=media_type, headers={"Content-Disposition": f"attachment; filename={result_file.filename}"})
+
+def save_result_file_to_db(simulation_name, file_type, filename, file_path, db):
+    with open(file_path, "rb") as f:
+        content_b64 = base64.b64encode(f.read()).decode("utf-8")
+    result_file = ResultFile(
+        simulation_name=simulation_name,
+        file_type=file_type,
+        filename=filename,
+        content_b64=content_b64
+    )
+    db.add(result_file)
+    db.commit()
 
 if __name__ == "__main__":
     import uvicorn

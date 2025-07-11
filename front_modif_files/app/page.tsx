@@ -109,10 +109,10 @@ export default function Home() {
     }
   }
 
-  // Récupère les fichiers de résultats pour la simulation sélectionnée
+  // Récupère les fichiers de résultats pour la simulation sélectionnée (depuis la base)
   const fetchResultFiles = async (simulationName: string) => {
     try {
-      const response = await axios.get(`${API_BASE_URL}/results/by_simulation/${simulationName}`)
+      const response = await axios.get(`${API_BASE_URL}/results/by_simulation_db/${simulationName}`)
       setResultFiles(response.data.files)
     } catch (error) {
       setResultFiles([])
@@ -386,12 +386,12 @@ export default function Home() {
                           <span className="font-mono text-xs">{f.filename}</span>
                           <a
                             href={`http://localhost:8000${f.url}`}
-                            target={f.type === 'html' ? '_blank' : '_self'}
+                            target={f.type === 'html' || f.filename.toLowerCase().endsWith('.htm') ? '_blank' : '_self'}
                             rel="noopener noreferrer"
                             className="text-blue-600 hover:underline text-xs border px-2 py-1 rounded"
-                            download={f.type === 'csv'}
+                            download={f.type === 'csv' ? true : undefined}
                           >
-                            {f.type === 'html' ? 'Voir HTML' : 'Télécharger CSV'}
+                            {f.type === 'html' || f.filename.toLowerCase().endsWith('.htm') ? 'Voir HTML' : 'Voir CSV'}
                           </a>
                         </li>
                       ))}

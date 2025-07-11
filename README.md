@@ -58,11 +58,11 @@ Le front sera disponible sur http://localhost:3000
 ## Documentation de l’API
 
 Voir le fichier [API_DOCUMENTATION.md](./API_DOCUMENTATION.md) pour la liste complète des endpoints, paramètres et exemples de réponses.
-
+De plus une documentation générée automatiquement est disponible à la route suivante : http://localhost:8000/docs
 ---
 
 ## Personnalisation
-- Le chemin vers EnergyPlus, le chemin pour le stockage des fichiers CSV (lignes 277, 759, 777) et eppy (ligne 20) est à adapter dans `api_server.py` selon votre installation.
+- Le chemin vers EnergyPlus et eppy (ligne 20) est à adapter dans `api_server.py` selon votre installation.
 - Les zones par défaut sont initialisées dans la base si absentes.
 - Les résultats sont stockés dans `res/` et en base SQL.
 
