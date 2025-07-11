@@ -64,5 +64,5 @@ De plus une documentation générée automatiquement est disponible à la route 
 ## Personnalisation
 - Le chemin vers EnergyPlus et eppy (ligne 20) est à adapter dans `api_server.py` selon votre installation.
 - Les zones par défaut sont initialisées dans la base si absentes.
-- Les résultats sont stockés dans `res/` et en base SQL.
+- Les résultats sont stockés en base SQL.
 
