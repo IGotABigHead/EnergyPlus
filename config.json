@@ -1,0 +1,8 @@
+{
+  "ENERGYPLUS_IDD_PATH": "C:/EnergyPlusV9-4-0/Energy+.idd",
+  "EPPY_LIB_PATH": "C:/Users/Cesi/AppData/Local/Programs/Python/Python313/Lib/site-packages/eppy",
+  "DATABASE_URL": "mysql+mysqldb://root:root@localhost/energyplus",
+  "CORS_ORIGINS": ["http://localhost:3000"],
+  "API_HOST": "0.0.0.0",
+  "API_PORT": 8000
+} 

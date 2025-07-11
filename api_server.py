@@ -17,18 +17,27 @@ from pydantic import BaseModel
 import numpy as np
 from sqlalchemy.dialects.mysql import LONGTEXT
 import io
+import json
 
-pathnameto_eppy = 'C:\\Users\\Cesi\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\site-packages\\eppy'
+# Charger la configuration externe
+with open("config.json", "r", encoding="utf-8") as f:
+    config = json.load(f)
+
+# Utilisation des variables de config
+ENERGYPLUS_IDD_PATH = config["ENERGYPLUS_IDD_PATH"]
+pathnameto_eppy = config["EPPY_LIB_PATH"]
+DATABASE_URL = config["DATABASE_URL"]
+CORS_ORIGINS = config["CORS_ORIGINS"]
+API_HOST = config.get("API_HOST", "0.0.0.0")
+API_PORT = config.get("API_PORT", 8000)
+
 sys.path.append(pathnameto_eppy)
 
 from eppy.modeleditor import IDF
 
 
-ENERGYPLUS_IDD_PATH = r"C:\\EnergyPlusV9-4-0\\Energy+.idd"
-
 # --- Configuration SQLAlchemy ---
-DATABASE_URL = "mysql+mysqldb://root:root@localhost/energyplus"  # Adaptez avec vos identifiants
-
+# Remplace la création de l'engine par la variable DATABASE_URL
 engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
@@ -108,9 +117,10 @@ def fill_zones_if_needed():
 fill_zones_if_needed()
 
 app = FastAPI()
+# CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -288,21 +298,15 @@ def run_simulation(idf_file_id: int = Body(...), epw_file_id: int = Body(...), d
                 existing_sim_count = db.query(Simulation).filter(Simulation.simulation_name.like(f"{base_name}_%")).count()
                 simulation_name = f"{base_name}_{existing_sim_count + 1}"
                 
-                res_dir = r"C:\\Users\\Cesi\\Desktop\\IR_THEO_BOSSET\\Git\\res"
-                os.makedirs(res_dir, exist_ok=True)
                 # Copie du CSV déjà existante
-                dest_csv_path = os.path.join(res_dir, f"{simulation_name}.csv")
-                shutil.copy2(csv_output_path, dest_csv_path)
-                save_result_file_to_db(simulation_name, 'csv', f"{simulation_name}.csv", dest_csv_path, db)
+                save_result_file_to_db(simulation_name, 'csv', f"{simulation_name}.csv", csv_output_path, db)
 
                 # Copie du HTML de résultats (Table.htm ou Table.html, insensible à la casse)
                 html_files = [f for f in os.listdir(csv_dir) if f.lower().endswith('table.htm') or f.lower().endswith('table.html')]
                 if html_files:
                     html_output_path = os.path.join(csv_dir, html_files[0])
-                    dest_html_path = os.path.join(res_dir, f"{simulation_name}Table.htm")
-                    shutil.copy2(html_output_path, dest_html_path)
-                    print(f"Fichier HTML copié : {dest_html_path}")
-                    save_result_file_to_db(simulation_name, 'html', f"{simulation_name}Table.htm", dest_html_path, db)
+                    print(f"Fichier HTML trouvé : {html_output_path}")
+                    save_result_file_to_db(simulation_name, 'html', f"{simulation_name}Table.htm", html_output_path, db)
                 else:
                     print(f"Aucun fichier HTML *Table.htm(l) trouvé dans {csv_dir}")
 
@@ -326,7 +330,7 @@ def run_simulation(idf_file_id: int = Body(...), epw_file_id: int = Body(...), d
                 return {
                     "status": "success",
                     "simulation_name": simulation_name,
-                    "message": f"Simulation '{simulation_name}' terminée. CSV copié dans {dest_csv_path}",
+                    "message": f"Simulation '{simulation_name}' terminée. CSV copié dans {csv_output_path}",
                     "results_count": len(df),
                     "stdout": f"Simulation '{simulation_name}' terminée avec succès. (rafraichir la page pour voir les résultats)",
                     "stderr": "",
@@ -545,8 +549,8 @@ def temperature_by_room(
     return {"simulation_name": sim_name, "room": room, "date": date, "hour": hour, "temperature_values": temperature_values}
 
 KEYWORDS = [
-    "Humidity", "Thermostat", "Fans", "Heating", "EnergyTransfer",
-    "Cooling", "InteriorLights", "InteriorEquipment", "Electricity", "PMV"
+    "Humidity", "Thermostat", "Fans", "Heating", "Cooling", "EnergyTransfer",
+    "InteriorLights", "InteriorEquipment", "Electricity", "PMV"
 ]
 
 def extract_zone_and_type(col_name):
@@ -563,6 +567,8 @@ def store_results_by_zone(df: pd.DataFrame, simulation_id: int, db: Session):
     # Récupérer toutes les zones de la base
     zones = db.query(Zone).all()
     zone_map = {z.name.upper(): z.id for z in zones}
+
+    inserted = set()  # Pour éviter les doublons
 
     for col in df.columns:
         if col == "Date/Time":
@@ -589,6 +595,10 @@ def store_results_by_zone(df: pd.DataFrame, simulation_id: int, db: Session):
         zone_id = zone_map[zone_found]
         for idx, value in enumerate(df[col]):
             datetime_val = df["Date/Time"].iloc[idx]
+            key_tuple = (simulation_id, zone_id, datetime_val, data_type, value)
+            if key_tuple in inserted:
+                continue  # Déjà inséré
+            inserted.add(key_tuple)
             result = Result(
                 simulation_id=simulation_id,
                 zone_id=zone_id,
@@ -597,7 +607,6 @@ def store_results_by_zone(df: pd.DataFrame, simulation_id: int, db: Session):
                 value=value
             )
             db.add(result)
-
     db.commit()
 
 def build_like_pattern(date, hour):
@@ -770,35 +779,6 @@ def list_simulations(db: Session = Depends(get_db)):
     sims = db.query(Simulation).order_by(Simulation.timestamp.desc()).all()
     return {"simulations": [s.simulation_name for s in sims]}
 
-@app.get("/results/by_simulation/{simulation_name}")
-def list_results_files(simulation_name: str):
-    """
-    Liste les fichiers de résultats (CSV, HTML/HTM) disponibles pour une simulation donnée.
-    """
-    res_dir = r"C:\\Users\\Cesi\\Desktop\\IR_THEO_BOSSET\\Git\\res"
-    base = simulation_name
-    files = []
-
-    # Cherche le CSV
-    csv_path = os.path.join(res_dir, f"{base}.csv")
-    if os.path.exists(csv_path):
-        files.append({
-            "filename": f"{base}.csv",
-            "type": "csv",
-            "url": f"/results/download/{base}.csv"
-        })
-
-    # Cherche tous les fichiers Table.htm(l)
-    for ext in ["Table.htm", "Table.html"]:
-        html_path = os.path.join(res_dir, f"{base}{ext}")
-        if os.path.exists(html_path):
-            files.append({
-                "filename": f"{base}{ext}",
-                "type": "html",
-                "url": f"/results/download/{base}{ext}"
-            })
-    return {"files": files}
-
 @app.get("/results/by_simulation_db/{simulation_name}")
 def list_results_files_db(simulation_name: str, db: Session = Depends(get_db)):
     files = db.query(ResultFile).filter(ResultFile.simulation_name == simulation_name).all()
@@ -810,21 +790,6 @@ def list_results_files_db(simulation_name: str, db: Session = Depends(get_db)):
             "url": f"/results/download_db/{f.id}"
         } for f in files
     ]}
-
-@app.get("/results/download/{filename}")
-def download_result_file(filename: str):
-    """
-    Sert un fichier de résultat (CSV ou HTML) depuis le dossier res/.
-    """
-    res_dir = r"C:\\Users\\Cesi\\Desktop\\IR_THEO_BOSSET\\Git\\res"
-    path = os.path.join(res_dir, filename)
-    if not os.path.exists(path):
-        raise HTTPException(status_code=404, detail="Fichier non trouvé")
-    # Pour HTML, afficher dans le navigateur ; pour CSV, forcer le téléchargement
-    if filename.lower().endswith('.html'):
-        return FileResponse(path, media_type='text/html', filename=filename)
-    else:
-        return FileResponse(path, media_type='text/csv', filename=filename)
 
 @app.get("/results/download_db/{file_id}")
 def download_result_file_db(file_id: int, db: Session = Depends(get_db)):
@@ -850,4 +815,4 @@ def save_result_file_to_db(simulation_name, file_type, filename, file_path, db):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000) 
+    uvicorn.run(app, host=API_HOST, port=API_PORT) 

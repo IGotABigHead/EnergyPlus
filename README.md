@@ -25,6 +25,27 @@ Git/
 
 ---
 
+## Configuration
+
+Toute la configuration de l’API (chemin du fichier IDD EnergyPlus, chemin de la librairie eppy, chaîne de connexion à la base de données, CORS, etc.) se fait désormais dans le fichier `config.json` à la racine du projet.
+
+Exemple de contenu du fichier `config.json` :
+
+```json
+{
+  "ENERGYPLUS_IDD_PATH": "C:/EnergyPlusV9-4-0/Energy+.idd",
+  "EPPY_LIB_PATH": "C:/Users/Cesi/AppData/Local/Programs/Python/Python313/Lib/site-packages/eppy",
+  "DATABASE_URL": "mysql+mysqldb://root:root@localhost/energyplus",
+  "CORS_ORIGINS": ["http://localhost:3000"],
+  "API_HOST": "0.0.0.0",
+  "API_PORT": 8000
+}
+```
+
+Pour modifier un paramètre, il suffit de changer la valeur correspondante dans ce fichier, puis de relancer l’API.
+
+---
+
 ## Installation & Lancement
 
 ### Prérequis
