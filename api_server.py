@@ -23,6 +23,9 @@ sys.path.append(pathnameto_eppy)
 
 from eppy.modeleditor import IDF
 
+
+ENERGYPLUS_IDD_PATH = r"C:\\EnergyPlusV9-4-0\\Energy+.idd"
+
 # --- Configuration SQLAlchemy ---
 DATABASE_URL = "mysql+mysqldb://root:root@localhost/energyplus"  # Adaptez avec vos identifiants
 
@@ -256,8 +259,8 @@ def run_simulation(idf_file_id: int = Body(...), epw_file_id: int = Body(...), d
             f.write(epw_bytes)
 
         try:
-            iddfile = "C:\\EnergyPlusV9-4-0\\Energy+.idd"
-            IDF.setiddname(iddfile)
+            # Définir le chemin du fichier IDD EnergyPlus à un seul endroit
+            IDF.setiddname(ENERGYPLUS_IDD_PATH)
             idf = IDF(idf_path, epw_path)
             
             idfversion = idf.idfobjects['version'][0].Version_Identifier.split('.')
@@ -696,8 +699,8 @@ def get_idf_objects(file_id: int, db: Session = Depends(get_db)):
             tmp.write(content)
             tmp_path = tmp.name
 
-        iddfile = "C:\\EnergyPlusV9-4-0\\Energy+.idd"
-        IDF.setiddname(iddfile)
+        # Définir le chemin du fichier IDD EnergyPlus à un seul endroit
+        IDF.setiddname(ENERGYPLUS_IDD_PATH)
         idf = IDF(tmp_path)
         
         structured_idf = {}
@@ -736,8 +739,8 @@ def update_idf_field(file_id: int, update_data: IDFFieldUpdate, db: Session = De
             tmp.write(content)
             tmp_path = tmp.name
 
-        iddfile = "C:\\EnergyPlusV9-4-0\\Energy+.idd"
-        IDF.setiddname(iddfile)
+        # Définir le chemin du fichier IDD EnergyPlus à un seul endroit
+        IDF.setiddname(ENERGYPLUS_IDD_PATH)
         idf = IDF(tmp_path)
         
         objects_of_type = idf.idfobjects.get(update_data.object_type.upper())

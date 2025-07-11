@@ -34,6 +34,11 @@ Git/
 - EnergyPlus installé (chemin modifiable dans `api_server.py`)
 - (Optionnel) Docker & docker-compose
 
+## Personnalisation
+- Le chemin vers EnergyPlus (ligne 27 du fichier API) et eppy (ligne 20 du fichier API) sont à adapter dans `api_server.py` selon votre installation.
+- Penser à changer tous les chemins qui sont en localhost vers l'adresse des serveurs à utiliser
+- Pour la BD, il faut modifier la variable "DATABASE_URL" (ligne 30) du fichier API, en modifiant le user, mdp et le nom de la base utilisé
+
 ### 1. Lancer la base de données
 Configurer un MySQL local avec un utilisateur `root:root` et une base `energyplus` (ou adapter la chaîne dans `api_server.py`).
 
@@ -57,12 +62,9 @@ Le front sera disponible sur http://localhost:3000
 
 ## Documentation de l’API
 
+
 Voir le fichier [API_DOCUMENTATION.md](./API_DOCUMENTATION.md) pour la liste complète des endpoints, paramètres et exemples de réponses.
 De plus une documentation générée automatiquement est disponible à la route suivante : http://localhost:8000/docs
----
 
-## Personnalisation
-- Le chemin vers EnergyPlus et eppy (ligne 20) est à adapter dans `api_server.py` selon votre installation.
-- Les zones par défaut sont initialisées dans la base si absentes.
-- Les résultats sont stockés en base SQL.
+---
 
