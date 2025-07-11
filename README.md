@@ -15,11 +15,14 @@ Ce projet propose une plateforme web pour manipuler des fichiers EnergyPlus (IDF
 
 ```
 Git/
-├── api_server.py              # Serveur FastAPI (API principale)
-├── requirements.txt           # Dépendances Python (API)
-├── res/                       # Résultats CSV des simulations
-├── front_modif_files/         # Front-end Next.js/React
-├── API_Documentation.md       # Documentation de l'API
+├── api_server.py                    # Serveur FastAPI (API principale)
+├── requirements.txt                 # Dépendances Python (API)
+├── front_modif_files/               # Front-end Next.js/React
+├── API_Documentation.md             # Documentation de l'API
+├── config.json                      # Fichier de configuration de l'app
+├── API_Documentation.md             # Documentation de l'API
+├── FRA_Paris.Orly.071490_IWEC.epw   # Fichier météo
+├── NR3_V07-24.idf                   # Fichier batiment
 └── ...
 ```
 
